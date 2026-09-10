@@ -1,0 +1,6 @@
+# Normalise to LF in the repository. The API is developed on Windows and built
+# on Linux in CI; without this, checked-in line endings drift between the two.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
