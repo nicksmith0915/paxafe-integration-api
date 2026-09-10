@@ -5,7 +5,7 @@ Every error response is [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)
 
 ```json
 {
-  "type": "https://github.com/paxafe/integration-api/blob/main/docs/ERRORS.md#schema_validation_failed",
+  "type": "https://github.com/nicksmith0915/paxafe-integration-api/blob/main/docs/ERRORS.md#schema_validation_failed",
   "title": "schema validation failed",
   "status": 422,
   "code": "SCHEMA_VALIDATION_FAILED",

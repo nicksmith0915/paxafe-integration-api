@@ -10,7 +10,7 @@
 
 import { IngestError, type ErrorCode, type FieldIssue } from '@/lib/ingest/errors';
 
-const DOC_BASE = 'https://github.com/paxafe/integration-api/blob/main/docs/ERRORS.md';
+const DOC_BASE = 'https://github.com/nicksmith0915/paxafe-integration-api/blob/main/docs/ERRORS.md';
 
 export interface ProblemBody {
   type: string;

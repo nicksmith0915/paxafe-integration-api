@@ -4,7 +4,7 @@ Receives Tive IoT webhook payloads, validates and normalises them into the PAXAF
 canonical **sensor** and **location** formats, and persists them to PostgreSQL.
 
 Built for the Senior Integration Engineer take-home. The companion payload
-generator lives in the [Mock Tive Sender](../mock-sender) repository.
+generator lives in the [Mock Tive Sender](https://github.com/nicksmith0915/paxafe-mock-tive-sender) repository.
 
 ---
 
