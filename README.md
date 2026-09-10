@@ -6,6 +6,12 @@ canonical **sensor** and **location** formats, and persists them to PostgreSQL.
 Built for the Senior Integration Engineer take-home. The companion payload
 generator lives in the [Mock Tive Sender](https://github.com/nicksmith0915/paxafe-mock-tive-sender) repository.
 
+**Live:** https://paxafe-integration-api-five.vercel.app
+&nbsp;&nbsp;·&nbsp;&nbsp;[health](https://paxafe-integration-api-five.vercel.app/api/health)
+&nbsp;&nbsp;·&nbsp;&nbsp;webhook endpoint `POST /api/webhook/tive`
+
+Sending requires an API key. The test key is in the submission email.
+
 ---
 
 ## Quick start
