@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    # A real Postgres, so the persistence tests that are skipped locally --
+    # unique-index idempotency, transaction atomicity, numeric round-tripping --
+    # actually execute on every push.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pxtest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pxtest
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pxtest
+      API_KEYS: ci_test_key
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Apply migrations
+        run: npm run db:migrate
+
+      - name: Test with coverage
+        run: npm run test:coverage
+
+      # Catches anything that only breaks in a production build -- and confirms
+      # no route accidentally became statically prerendered.
+      - name: Build
+        run: npm run build

@@ -1,0 +1,291 @@
+{
+  "description": "Sample Tive payloads for testing your integration",
+  "payloads": [
+    {
+      "name": "Standard Temperature Shipment",
+      "description": "Normal shipment with all sensor data - cold chain pharma delivery",
+      "payload": {
+        "EntityName": "A571992",
+        "EntryTimeEpoch": 1739215646000,
+        "EntryTimeUtc": "2025-02-10T19:27:26Z",
+        "Cellular": {
+          "SignalStrength": "Poor",
+          "Dbm": -100
+        },
+        "Temperature": {
+          "Celsius": 10.078125,
+          "Fahrenheit": 50.140625
+        },
+        "ProbeTemperature": null,
+        "Humidity": {
+          "Percentage": 38.70000076293945
+        },
+        "Accelerometer": {
+          "G": 0.9901862198596787,
+          "X": -0.5625,
+          "Y": -0.4375,
+          "Z": 0.6875
+        },
+        "Light": {
+          "Lux": 0
+        },
+        "Battery": {
+          "Percentage": 65,
+          "Estimation": "N/A",
+          "IsCharging": false
+        },
+        "Shipment": {
+          "Id": "CL-13686/PHARMA-SHIP/COLD-LOGISTICS",
+          "Description": null,
+          "DeviceId": "866088073468439",
+          "ShipFrom": {
+            "Latitude": 26.09891,
+            "Longitude": -98.18494,
+            "FormattedAddress": "1460 E Hi Line Rd, Pharr, TX 78577, USA"
+          },
+          "ShipTo": {
+            "Latitude": 40.815468,
+            "Longitude": -73.8805,
+            "FormattedAddress": "772 Edgewater Rd, Bronx, NY 10474, USA"
+          },
+          "Carrier": "EXCALIBUR"
+        },
+        "AccountId": 478,
+        "DeviceId": "863257063350583",
+        "DeviceName": "A571992",
+        "ShipmentId": "CL-13686/PHARMA-SHIP/COLD-LOGISTICS",
+        "PublicShipmentId": "40X614N4WC",
+        "Location": {
+          "Latitude": 40.810562,
+          "Longitude": -73.879285,
+          "FormattedAddress": "114 Hunts Point Market, Bronx, NY 10474, USA",
+          "LocationMethod": "wifi",
+          "Accuracy": {
+            "Meters": 23,
+            "Kilometers": 0.023,
+            "Miles": 0.014291572942945556
+          },
+          "GeolocationSourceName": "skyhook",
+          "CellTowerUsedCount": 1,
+          "WifiAccessPointUsedCount": 5
+        }
+      }
+    },
+    {
+      "name": "GPS Location Shipment",
+      "description": "Shipment using GPS for location instead of WiFi",
+      "payload": {
+        "EntityName": "B234567",
+        "EntryTimeEpoch": 1739302046000,
+        "EntryTimeUtc": "2025-02-11T19:27:26Z",
+        "Cellular": {
+          "SignalStrength": "Good",
+          "Dbm": -75
+        },
+        "Temperature": {
+          "Celsius": 4.5,
+          "Fahrenheit": 40.1
+        },
+        "ProbeTemperature": null,
+        "Humidity": {
+          "Percentage": 55.3
+        },
+        "Accelerometer": {
+          "G": 1.012,
+          "X": 0.125,
+          "Y": -0.250,
+          "Z": 0.980
+        },
+        "Light": {
+          "Lux": 125.5
+        },
+        "Battery": {
+          "Percentage": 82,
+          "Estimation": "Weeks",
+          "IsCharging": false
+        },
+        "Shipment": {
+          "Id": "INV-45678/VACCINE-BATCH",
+          "Description": "COVID Vaccine Shipment",
+          "DeviceId": "866088073468440",
+          "ShipFrom": {
+            "Latitude": 42.3601,
+            "Longitude": -71.0589,
+            "FormattedAddress": "Boston, MA 02101, USA"
+          },
+          "ShipTo": {
+            "Latitude": 33.7490,
+            "Longitude": -84.3880,
+            "FormattedAddress": "Atlanta, GA 30303, USA"
+          },
+          "Carrier": "FEDEX-COLD"
+        },
+        "AccountId": 478,
+        "DeviceId": "866088073468440",
+        "DeviceName": "B234567",
+        "ShipmentId": "INV-45678/VACCINE-BATCH",
+        "PublicShipmentId": "7YK832MNP1",
+        "Location": {
+          "Latitude": 37.7749,
+          "Longitude": -122.4194,
+          "FormattedAddress": "San Francisco, CA 94102, USA",
+          "LocationMethod": "gps",
+          "Accuracy": {
+            "Meters": 5,
+            "Kilometers": 0.005,
+            "Miles": 0.003
+          },
+          "GeolocationSourceName": "gnss",
+          "CellTowerUsedCount": 0,
+          "WifiAccessPointUsedCount": 0
+        }
+      }
+    },
+    {
+      "name": "Cellular Location Only",
+      "description": "Shipment using cell tower triangulation",
+      "payload": {
+        "EntityName": "C345678",
+        "EntryTimeEpoch": 1739388446000,
+        "EntryTimeUtc": "2025-02-12T19:27:26Z",
+        "Cellular": {
+          "SignalStrength": "Fair",
+          "Dbm": -90
+        },
+        "Temperature": {
+          "Celsius": -18.5,
+          "Fahrenheit": -1.3
+        },
+        "ProbeTemperature": null,
+        "Humidity": {
+          "Percentage": 25.0
+        },
+        "Accelerometer": {
+          "G": 0.995,
+          "X": 0.0,
+          "Y": 0.0,
+          "Z": 0.995
+        },
+        "Light": {
+          "Lux": 0
+        },
+        "Battery": {
+          "Percentage": 45,
+          "Estimation": "Days",
+          "IsCharging": false
+        },
+        "Shipment": null,
+        "AccountId": 478,
+        "DeviceId": "866088073468441",
+        "DeviceName": "C345678",
+        "ShipmentId": null,
+        "PublicShipmentId": null,
+        "Location": {
+          "Latitude": 51.5074,
+          "Longitude": -0.1278,
+          "FormattedAddress": "London, UK",
+          "LocationMethod": "cell",
+          "Accuracy": {
+            "Meters": 500,
+            "Kilometers": 0.5,
+            "Miles": 0.31
+          },
+          "GeolocationSourceName": "cell-triangulation",
+          "CellTowerUsedCount": 3,
+          "WifiAccessPointUsedCount": 0
+        }
+      }
+    },
+    {
+      "name": "Minimal Data Payload",
+      "description": "Payload with minimum required fields only",
+      "payload": {
+        "EntryTimeEpoch": 1739474846000,
+        "EntityName": "D456789",
+        "DeviceId": "866088073468442",
+        "DeviceName": "D456789",
+        "Temperature": {
+          "Celsius": 22.0,
+          "Fahrenheit": 71.6
+        },
+        "Location": {
+          "Latitude": 35.6762,
+          "Longitude": 139.6503,
+          "LocationMethod": null,
+          "Accuracy": null
+        }
+      }
+    }
+  ],
+  "invalid_payloads": [
+    {
+      "name": "Missing Device Identifiers - Scenario A",
+      "description": "Payload missing some device identifier fields - determine which are required",
+      "payload": {
+        "EntryTimeEpoch": 1739215646000,
+        "DeviceName": "A571992",
+        "Temperature": { "Celsius": 10.0 },
+        "Location": { "Latitude": 40.0, "Longitude": -73.0 }
+      }
+    },
+    {
+      "name": "Missing Device Identifiers - Scenario B",
+      "description": "Payload with different device identifier fields present",
+      "payload": {
+        "EntryTimeEpoch": 1739215646000,
+        "EntityName": "A571992",
+        "DeviceName": "Ship33CABOL",
+        "Temperature": { "Celsius": 10.0 },
+        "Location": { "Latitude": 40.0, "Longitude": -73.0 }
+      }
+    },
+    {
+      "name": "Invalid Latitude",
+      "description": "Latitude outside -90 to 90 range",
+      "payload": {
+        "EntryTimeEpoch": 1739215646000,
+        "EntityName": "A571992",
+        "DeviceId": "863257063350583",
+        "DeviceName": "A571992",
+        "Temperature": { "Celsius": 10.0 },
+        "Location": { "Latitude": 95.0, "Longitude": -73.0 }
+      }
+    },
+    {
+      "name": "Invalid Longitude",
+      "description": "Longitude outside -180 to 180 range",
+      "payload": {
+        "EntryTimeEpoch": 1739215646000,
+        "EntityName": "A571992",
+        "DeviceId": "863257063350583",
+        "DeviceName": "A571992",
+        "Temperature": { "Celsius": 10.0 },
+        "Location": { "Latitude": 40.0, "Longitude": -200.0 }
+      }
+    },
+    {
+      "name": "Timestamp in Future",
+      "description": "Timestamp is from date in the very distant future.",
+      "payload": {
+        "EntryTimeEpoch": 1893456000000,
+        "EntityName": "A571992",
+        "DeviceId": "863257063350583",
+        "DeviceName": "A571992",
+        "Temperature": { "Celsius": 10.0 },
+        "Location": { "Latitude": 40.0, "Longitude": -73.0 }
+      }
+    },
+    {
+      "name": "Old Timestamp",
+      "description": "Timestamp is from date in the very distant past.",
+      "payload": {
+        "EntryTimeEpoch": 1609459200000,
+        "EntityName": "A571992",
+        "DeviceId": "863257063350583",
+        "DeviceName": "A571992",
+        "Temperature": { "Celsius": 10.0 },
+        "Location": { "Latitude": 40.0, "Longitude": -73.0 }
+      }
+    }
+  ]
+}
