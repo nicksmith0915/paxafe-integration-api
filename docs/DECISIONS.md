@@ -225,3 +225,23 @@ Tive's production webhooks may support request signing. Nothing in the provided
 schemas describes a signature header, so implementing one would mean inventing a
 scheme that could not interoperate. An API key is the documented mechanism here.
 In a real onboarding this is the first question to ask the provider.
+
+---
+
+## 13. Trade-off: an unavailable database rejects everything
+
+Because the raw payload is stored before validation (decision 8), a database
+outage produces `503 PERSISTENCE_FAILED` for *every* request — including
+payloads that are malformed and could never succeed.
+
+**Why this is accepted.** The alternative is validating first so that malformed
+payloads still receive a 422 while the database is down. That optimises the
+response given to a broken sender during an outage, at the cost of the property
+that matters more: if our own validator is wrong about a payload Tive considers
+valid — the likeliest failure in any provider integration, since their schema
+will drift — the data is gone rather than replayable.
+
+**Consequence.** `retryable: true` on that 503 is correct for valid payloads and
+misleading for invalid ones: a sender retrying a malformed payload will get a
+422 once the database recovers. That is a bounded cost during an outage, and the
+sender learns the truth as soon as the system is healthy again.

@@ -73,25 +73,74 @@ function peekEpoch(body: unknown): Date | null {
   return typeof value === 'number' && Number.isFinite(value) ? new Date(value) : null;
 }
 
+/**
+ * Status finalisation is bookkeeping, not the result. If it fails -- typically
+ * because the database went away mid-request -- the sender must still receive
+ * the real outcome. A validation rejection reported as a 500 would tell a sender
+ * to retry a payload that can never succeed. The row is left as 'received',
+ * which is recoverable, and the failure is logged.
+ */
+async function safeFinalize(
+  deps: IngestDeps,
+  requestId: string,
+  rawPayloadId: string,
+  status: 'processed' | 'duplicate' | 'rejected' | 'failed',
+  error?: { code: string; detail?: unknown },
+): Promise<void> {
+  try {
+    await deps.repo.finalizeRawPayload(rawPayloadId, status, error);
+  } catch (cause) {
+    logger.error('failed to finalise raw payload status', {
+      request_id: requestId,
+      event: 'ingest.finalize_failed',
+      status,
+      error: cause instanceof Error ? cause.message : String(cause),
+    });
+  }
+}
+
 export async function ingestTivePayload(
   body: unknown,
   requestId: string,
   deps: IngestDeps,
 ): Promise<IngestOutcome> {
-  const rawPayloadId = await deps.repo.insertRawPayload({
-    requestId,
-    provider: PROVIDER,
-    body,
-    deviceImei: peekDeviceImei(body),
-    recordedAt: peekEpoch(body),
-  });
+  /**
+   * The database is unavailable far more often than any other dependency, and
+   * this is the first thing that touches it. Without this guard the failure
+   * surfaces as a generic 500, telling the sender nothing about whether a retry
+   * could help -- when in fact it is the one failure that is always retryable.
+   */
+  let rawPayloadId: string;
+  try {
+    rawPayloadId = await deps.repo.insertRawPayload({
+      requestId,
+      provider: PROVIDER,
+      body,
+      deviceImei: peekDeviceImei(body),
+      recordedAt: peekEpoch(body),
+    });
+  } catch (cause) {
+    logger.error('failed to record raw payload', {
+      request_id: requestId,
+      event: 'ingest.failed',
+      error_code: 'PERSISTENCE_FAILED',
+      device_imei: peekDeviceImei(body),
+      error: cause instanceof Error ? cause.message : String(cause),
+    });
+    throw new IngestError(
+      'PERSISTENCE_FAILED',
+      503,
+      'Could not record the payload. Retry later.',
+      { cause, retryable: true },
+    );
+  }
 
   // --- Validate -------------------------------------------------------------
 
   const parsed = TivePayloadSchema.safeParse(body);
   if (!parsed.success) {
     const issues = toFieldIssues(parsed.error);
-    await deps.repo.finalizeRawPayload(rawPayloadId, 'rejected', {
+    await safeFinalize(deps, requestId, rawPayloadId, 'rejected', {
       code: 'SCHEMA_VALIDATION_FAILED',
       detail: issues,
     });
@@ -111,7 +160,7 @@ export async function ingestTivePayload(
 
   const windowIssues = checkTimestampWindow(payload.EntryTimeEpoch, deps.now(), deps.window);
   if (windowIssues.length > 0) {
-    await deps.repo.finalizeRawPayload(rawPayloadId, 'rejected', {
+    await safeFinalize(deps, requestId, rawPayloadId, 'rejected', {
       code: 'TIMESTAMP_OUT_OF_RANGE',
       detail: windowIssues,
     });
@@ -157,7 +206,7 @@ export async function ingestTivePayload(
         : null,
     });
   } catch (cause) {
-    await deps.repo.finalizeRawPayload(rawPayloadId, 'failed', {
+    await safeFinalize(deps, requestId, rawPayloadId, 'failed', {
       code: 'PERSISTENCE_FAILED',
       detail: { message: cause instanceof Error ? cause.message : String(cause) },
     });
@@ -176,7 +225,7 @@ export async function ingestTivePayload(
   }
 
   const status = result.duplicate ? 'duplicate' : 'processed';
-  await deps.repo.finalizeRawPayload(rawPayloadId, status);
+  await safeFinalize(deps, requestId, rawPayloadId, status);
 
   logger.info('payload ingested', {
     request_id: requestId,

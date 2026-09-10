@@ -32,8 +32,11 @@ class FakeRepository implements TelemetryRepository {
   /** Idempotency key -> already stored, mirroring the unique index. */
   private seen = new Set<string>();
   persistShouldThrow: Error | null = null;
+  insertShouldThrow: Error | null = null;
+  finalizeShouldThrow: Error | null = null;
 
   async insertRawPayload(input: RawPayloadInput): Promise<string> {
+    if (this.insertShouldThrow) throw this.insertShouldThrow;
     const id = `raw-${this.raws.length + 1}`;
     this.raws.push({ id, input, status: 'received' });
     return id;
@@ -44,6 +47,7 @@ class FakeRepository implements TelemetryRepository {
     status: IngestStatus,
     error?: { code: string },
   ): Promise<void> {
+    if (this.finalizeShouldThrow) throw this.finalizeShouldThrow;
     const row = this.raws.find((r) => r.id === id);
     if (!row) throw new Error(`finalize called for unknown raw payload ${id}`);
     row.status = status;
@@ -165,6 +169,26 @@ describe('rejections are recorded, not just returned', () => {
 });
 
 describe('persistence failure', () => {
+  it('reports an unavailable database as retryable, not as a generic 500', async () => {
+    // The raw insert is the first thing to touch the database, so it is the
+    // first thing to fail when the database is down.
+    repo.insertShouldThrow = new Error('ECONNREFUSED 127.0.0.1:5432');
+
+    await expect(
+      ingestTivePayload(validPayload('Minimal Data Payload'), 'req-1', deps()),
+    ).rejects.toMatchObject({ code: 'PERSISTENCE_FAILED', status: 503, retryable: true });
+  });
+
+  it('still returns the real rejection when status bookkeeping fails', async () => {
+    // A validation rejection must not be reported as a retryable 500 just
+    // because the database went away while recording it.
+    repo.finalizeShouldThrow = new Error('connection terminated');
+
+    await expect(
+      ingestTivePayload(invalidPayload('Invalid Latitude'), 'req-1', deps()),
+    ).rejects.toMatchObject({ code: 'SCHEMA_VALIDATION_FAILED', status: 422, retryable: false });
+  });
+
   it('marks the payload failed and asks the sender to retry', async () => {
     repo.persistShouldThrow = new Error('connection terminated');
 
