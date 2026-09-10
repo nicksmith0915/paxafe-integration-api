@@ -115,7 +115,16 @@ export async function persistReadings(
           // DeviceName is user-programmable and can be renamed mid-shipment;
           // keep the newest value while preserving first_seen_at.
           deviceId: sensor.device_id,
-          lastSeenAt: sql`greatest(${devices.lastSeenAt}, ${recordedAt})`,
+          /**
+           * `excluded` is the row this statement tried to insert. Referencing it
+           * keeps the timestamp as the value Drizzle already bound for the
+           * insert; interpolating the JS Date into this raw fragment instead
+           * bypasses the column type mapping and fails at bind time.
+           *
+           * greatest() guards against out-of-order delivery: a buffered reading
+           * arriving late must not drag last_seen_at backwards.
+           */
+          lastSeenAt: sql`greatest(${devices.lastSeenAt}, excluded.last_seen_at)`,
         },
       });
 

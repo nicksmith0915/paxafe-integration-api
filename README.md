@@ -295,7 +295,7 @@ instances racing to migrate is a reliable way to corrupt a schema.
 ## Testing
 
 ```bash
-npm test              # 85 tests
+npm test              # 93 tests
 npm run test:coverage # thresholds enforced
 ```
 
@@ -309,7 +309,7 @@ npm run test:coverage # thresholds enforced
 | `auth.test.ts` | Key comparison and header extraction |
 | `problem.test.ts` | Error response contract; no internal detail leakage |
 | `config.test.ts` | Environment validation |
-| `db.integration.test.ts` | Real unique-index idempotency — **skipped** unless `TEST_DATABASE_URL` is set |
+| `db.integration.test.ts` | Unique-index idempotency, transaction atomicity, numeric round-tripping, device upsert ordering — **skipped** unless `TEST_DATABASE_URL` is set |
 
 Tests read `schemas/sample-tive-payloads.json` directly rather than restating
 payloads as literals, so the shipped fixtures stay the single source of truth.
@@ -326,7 +326,10 @@ environment variables.
 
 Use Supabase's **transaction pooler** (port 6543), not the direct connection.
 Serverless functions open a connection per instance, and the direct connection
-limit is exhausted quickly under load. The client sets `prepare: false` to match
+limit is exhausted quickly under load. The direct host is also IPv6-only, so on
+an IPv4-only network it fails with `ENOTFOUND` — which looks like a typo rather
+than a missing route. TLS is required for any non-local host and is applied
+automatically, so a URL pasted straight from the dashboard works as-is. The client sets `prepare: false` to match
 the pooler's transaction mode; without it you get intermittent
 `prepared statement already exists` failures that only appear once real traffic
 arrives. Connections are capped at `max: 1` per instance and the client is cached

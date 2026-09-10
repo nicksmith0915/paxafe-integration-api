@@ -17,7 +17,8 @@ async function main(): Promise<void> {
   if (!url) throw new Error('DATABASE_URL is required to run migrations.');
 
   // max: 1 is required -- migrations must run sequentially on one connection.
-  const sql = postgres(url, { max: 1, prepare: false });
+  const isLocal = /@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
+  const sql = postgres(url, { max: 1, prepare: false, ssl: isLocal ? false : 'require' });
   try {
     await migrate(drizzle(sql), { migrationsFolder: './drizzle' });
     console.log('Migrations applied.');

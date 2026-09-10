@@ -31,9 +31,21 @@ const globalForDb = globalThis as unknown as {
 export function getDb(): DrizzleDb {
   if (globalForDb.__pxDb) return globalForDb.__pxDb;
 
-  const sql = postgres(getConfig().DATABASE_URL, {
+  const url = getConfig().DATABASE_URL;
+
+  /**
+   * Managed Postgres requires TLS; a local development or CI container does
+   * not offer it. Deciding here rather than relying on `?sslmode=` being present
+   * in the connection string means a URL pasted straight from the Supabase
+   * dashboard works on the first attempt, instead of failing with a confusing
+   * handshake error.
+   */
+  const isLocal = /@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
+
+  const sql = postgres(url, {
     max: 1,
     prepare: false,
+    ssl: isLocal ? false : 'require',
     idle_timeout: 20,
     connect_timeout: 10,
   });
