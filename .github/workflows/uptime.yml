@@ -1,0 +1,39 @@
+name: Uptime
+
+# Daily production health check. It serves two purposes:
+#
+#  1. Uptime monitoring. A failed run notifies the repository owner, so an
+#     outage is noticed without anyone having to look.
+#  2. Keeping the database awake. Supabase pauses free-tier projects after a
+#     week without activity, and a paused project does not resume on its own
+#     when traffic returns -- a reviewer arriving after a quiet week would find
+#     the API returning 503. /api/health runs a real query, which counts.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      # Overridable per repository (Settings -> Variables) without editing this file.
+      HEALTH_URL: ${{ vars.HEALTH_URL || 'https://paxafe-integration-api-five.vercel.app/api/health' }}
+    steps:
+      - name: Check production health
+        run: |
+          # Retried: the first request after a quiet period pays for a cold
+          # function start and a fresh database connection.
+          for attempt in 1 2 3; do
+            status=$(curl -s -o body.json -w '%{http_code}' --max-time 30 "$HEALTH_URL" || echo 000)
+            echo "attempt $attempt: HTTP $status $(cat body.json 2>/dev/null)"
+            if [ "$status" = "200" ]; then exit 0; fi
+            sleep 20
+          done
+          echo "::error::$HEALTH_URL did not return 200 after 3 attempts"
+          exit 1

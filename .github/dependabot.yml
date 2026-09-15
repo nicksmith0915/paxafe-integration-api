@@ -1,0 +1,23 @@
+# Monthly, grouped dependency updates. Minor and patch releases arrive as one PR
+# per dependency type rather than one per package, so keeping current costs a
+# single review a month. Major versions still arrive individually, because
+# those are the ones that need reading.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      production-dependencies:
+        dependency-type: production
+        update-types: [minor, patch]
+      development-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

@@ -5,9 +5,19 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only token: this workflow builds and tests, and never writes back.
+permissions:
+  contents: read
+
+# A newer push to the same branch supersedes an in-progress run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     # A real Postgres, so the persistence tests that are skipped locally --
     # unique-index idempotency, transaction atomicity, numeric round-tripping --
