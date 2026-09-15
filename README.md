@@ -327,7 +327,7 @@ instances racing to migrate is a reliable way to corrupt a schema.
 ## Testing
 
 ```bash
-npm test              # 170 tests
+npm test              # 197 tests (11 need a database; see below)
 npm run test:coverage # thresholds enforced
 ```
 
@@ -344,6 +344,8 @@ npm run test:coverage # thresholds enforced
 | `auth.test.ts` | Key comparison and header extraction |
 | `problem.test.ts` | Error response contract; no internal detail leakage |
 | `config.test.ts` | Environment validation |
+| `request-id.test.ts` | Caller-supplied correlation ids are accepted only when well-formed |
+| `database-guard.test.ts` | The integration suite refuses the application database, and cannot be bypassed with a query parameter |
 | `db.integration.test.ts` | Unique-index idempotency, conflict rollback, numeric round-tripping, real overflow and NUL errors classified correctly — **skipped** unless `TEST_DATABASE_URL` is set |
 
 Tests read `schemas/sample-tive-payloads.json` directly rather than restating
@@ -372,10 +374,26 @@ on `globalThis` so warm starts reuse one pool.
 
 Deployment order is **migrate, then deploy**.
 
+**Region.** `vercel.json` pins functions to `pdx1` (Portland), the same region as
+the Supabase database in `us-west-2`. Running in Vercel's default `iad1`
+(Virginia) cost about 70 ms per database round-trip, and one ingest makes
+several: measured end to end, a single payload took 1.6–2.9 s. Next.js 16
+deprecates the `preferredRegion` segment option, so the region is set at the
+project level.
+
 ### Operations
 
 - `GET /api/health` returns 503 when the database is unreachable, so a monitor
-  can alert on status code alone.
+  can alert on status code alone. It is public, so it reports *whether* the
+  database is reachable and never *why* not — driver errors name hosts, ports and
+  authentication failures. The detail goes to the logs.
+- **Uptime workflow** (`.github/workflows/uptime.yml`) requests the health check
+  daily and fails loudly if it does not return 200. It also keeps the database
+  awake: Supabase pauses free-tier projects after a week idle, and a paused
+  project does not resume when traffic returns.
+- **Dependabot** proposes grouped monthly updates for npm and GitHub Actions.
+  Runtime dependencies currently have no known vulnerabilities; the one advisory
+  (`esbuild`, via `drizzle-kit`) is in a development-only tool that never ships.
 - Logs are one JSON object per line with a `request_id` that also appears in the
   API response and the `raw_payloads` row, so an operator can pivot between all
   three.
@@ -390,6 +408,19 @@ group by error_code order by 2 desc;
 
 ---
 
+### Security posture
+
+| Concern | Handling |
+|---|---|
+| Authentication | Constant-time API key comparison; multiple keys for rotation |
+| Response headers | No framing, no MIME sniffing, no referrer, HSTS; `/api` responses are `no-store`; `X-Powered-By` removed |
+| Information disclosure | Error responses never include internal detail; the public health check reports state, not causes |
+| Request correlation | A caller's `X-Request-Id` is honoured only if well-formed, since it is echoed, logged and stored |
+| Resource exhaustion | 256 KB body limit measured in bytes; nesting beyond 32 levels rejected before any recursive walk |
+| Test safety | The integration suite refuses to run against the application's own database, because it truncates tables |
+
+---
+
 ## Not built, and why
 
 Scoped out deliberately rather than overlooked:
@@ -398,7 +429,7 @@ Scoped out deliberately rather than overlooked:
 |---|---|
 | Queue-backed async ingestion | Sustained throughput beyond what a synchronous function handles. The raw-payload-first ordering is the seam. |
 | Per-tenant API keys | `AccountId` is stored; keys are currently global. Needed as soon as more than one customer sends data. |
-| Rate limiting | A shared secret plus Vercel's platform limits suffice at this scale. |
+| Rate limiting | Unauthenticated requests are rejected before any database work, so the cost of abuse without a key is negligible. Worth adding with per-tenant keys, when one noisy sender should not degrade the others. |
 | Automatic replay of dead-lettered payloads | Rows are replayable today; a scheduled re-driver is the next step. |
 | PostGIS / geofencing | No geospatial queries yet; `double precision` coordinates keep the door open. |
 | Distributed tracing | Structured logs with a correlation id cover the current failure modes. |

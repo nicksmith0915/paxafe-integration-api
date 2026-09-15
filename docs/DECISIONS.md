@@ -381,3 +381,60 @@ shows what it would be in milliseconds.
 look valid. Sending seconds where milliseconds are expected is the classic unit
 bug in webhook integrations; the sender should be told plainly and fix it at the
 source, rather than be told their reading is 56 years old.
+
+---
+
+## 20. Functions run in the database's region
+
+**Decision.** Pin Vercel functions to `pdx1`, beside the Supabase database in
+`us-west-2`, via `vercel.json`.
+
+**Why.** Measured, not assumed: from the default `iad1` region every database
+round-trip cost about 70 ms, and an ingest makes several (raw insert, the
+readings transaction, the status update), so one payload took 1.6–2.9 s end to
+end. For a synchronous webhook (decision 7), that latency is paid by every
+sender on every reading. The region is set in project configuration because
+Next.js 16 deprecates the `preferredRegion` segment option.
+
+---
+
+## 21. Public endpoints report state, not causes
+
+**Decision.** `/api/health` returns whether the database is reachable and never
+the error; RFC 9457 error bodies never carry internal detail. Both log the full
+cause server-side.
+
+**Why.** The health check must be unauthenticated to be useful to a monitor,
+which makes it readable by anyone. A driver error such as `connect ECONNREFUSED`
+or an authentication failure names hosts, ports and poolers -- valuable to an
+operator, and equally to someone mapping the infrastructure.
+
+---
+
+## 22. Bodies too deep to process are rejected before they are walked
+
+**Decision.** A body nested more than 32 levels deep is rejected with a 422, and
+a stub is recorded in place of the body so the request is still audited.
+Timestamps are capped at the largest instant a JavaScript Date can represent.
+
+**Why.** Both previously crashed the handler with a retryable 500. `JSON.parse`
+accepts arbitrary depth, but everything afterwards -- sanitisation, validation,
+and the database driver's own `JSON.stringify` -- recurses and overflows the
+stack. A 200 KB body of brackets, inside the size limit, was enough. The depth
+check is iterative, because a recursive one would crash on exactly the input it
+guards against. A real Tive payload is three levels deep.
+
+---
+
+## 23. Integration tests refuse the application's database
+
+**Decision.** The persistence suite compares `TEST_DATABASE_URL` against every
+`DATABASE_URL` the application is configured with, and refuses to run on a
+match. Local databases are always allowed.
+
+**Why.** The suite truncates every table. During development it was run against
+the production connection string and did exactly that. A guard that depends on
+remembering not to do something is not a guard. Databases are compared by user,
+host, port and name, so an added `?sslmode=` or a different password cannot slip
+past; local databases are exempt because CI deliberately migrates and tests the
+same container.
