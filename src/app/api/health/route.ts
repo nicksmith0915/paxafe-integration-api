@@ -5,6 +5,11 @@
  * shallow: it verifies the database round-trips, which is the only dependency
  * whose failure the API cannot work around. Returns 503 when degraded so a
  * monitor can alert on status code alone.
+ *
+ * Because it is public, it reports *whether* the database is reachable and
+ * never *why* not. A driver error names hosts, ports, poolers and
+ * authentication failures -- useful to an operator, and to anyone mapping the
+ * infrastructure. The detail goes to the logs, which only operators can read.
  */
 
 import { sql } from 'drizzle-orm';
@@ -15,8 +20,7 @@ import { logger } from '@/lib/http/logger';
 
 interface Check {
   status: 'ok' | 'error';
-  latency_ms?: number;
-  error?: string;
+  latency_ms: number;
 }
 
 export async function GET(): Promise<Response> {
@@ -42,8 +46,10 @@ async function checkDatabase(): Promise<Check> {
     await getDb().execute(sql`select 1`);
     return { status: 'ok', latency_ms: Date.now() - startedAt };
   } catch (error) {
-    const message = describeDbError(error);
-    logger.error('health check failed', { event: 'health.database_error', error: message });
-    return { status: 'error', latency_ms: Date.now() - startedAt, error: message };
+    logger.error('health check failed', {
+      event: 'health.database_error',
+      error: describeDbError(error),
+    });
+    return { status: 'error', latency_ms: Date.now() - startedAt };
   }
 }
