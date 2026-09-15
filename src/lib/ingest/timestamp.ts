@@ -35,6 +35,17 @@ const MS_PER_DAY = 86_400_000;
 const SECONDS_HEURISTIC_LIMIT_MS = 100_000_000_000;
 const MS_PER_MINUTE = 60_000;
 
+/**
+ * An ISO rendering for messages, safe for any number. `EntryTimeEpoch` can be a
+ * valid safe integer yet lie beyond the range a JS Date can hold (8.64e15 ms);
+ * `toISOString()` then throws, which previously turned a bad timestamp into a
+ * retryable 500 instead of the 422 it deserves.
+ */
+function formatInstant(epochMs: number): string {
+  const date = new Date(epochMs);
+  return Number.isNaN(date.getTime()) ? `${epochMs} ms (beyond the representable date range)` : date.toISOString();
+}
+
 export function checkTimestampWindow(
   epochMs: number,
   now: number,
@@ -48,7 +59,7 @@ export function checkTimestampWindow(
       {
         path: 'EntryTimeEpoch',
         message:
-          `Timestamp ${new Date(epochMs).toISOString()} is more than ` +
+          `Timestamp ${formatInstant(epochMs)} is more than ` +
           `${window.maxFutureSkewMinutes} minutes in the future.`,
       },
     ];
@@ -69,7 +80,7 @@ export function checkTimestampWindow(
           path: 'EntryTimeEpoch',
           message:
             `Timestamp ${epochMs} looks like epoch seconds, not milliseconds ` +
-            `(as milliseconds it would be ${new Date(asMilliseconds).toISOString()}). ` +
+            `(as milliseconds it would be ${formatInstant(asMilliseconds)}). ` +
             `EntryTimeEpoch must be in milliseconds.`,
         },
       ];
@@ -79,7 +90,7 @@ export function checkTimestampWindow(
       {
         path: 'EntryTimeEpoch',
         message:
-          `Timestamp ${new Date(epochMs).toISOString()} is older than the ` +
+          `Timestamp ${formatInstant(epochMs)} is older than the ` +
           `${window.maxAgeDays}-day ingestion window.`,
       },
     ];

@@ -77,7 +77,9 @@ export const TivePayloadSchema = z.object({
   EntryTimeEpoch: z
     .number()
     .int('EntryTimeEpoch must be an integer number of milliseconds.')
-    .min(0),
+    .min(0)
+    // The largest instant a JavaScript Date -- and therefore this service -- can represent.
+    .max(8_640_000_000_000_000, 'EntryTimeEpoch is beyond the representable date range.'),
   Temperature: TemperatureReading,
   Location: TiveLocation,
 

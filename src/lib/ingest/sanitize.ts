@@ -67,3 +67,32 @@ export function payloadShapeIssue(body: unknown): FieldIssue | null {
   }
   return null;
 }
+
+/**
+ * Deepest nesting accepted. A Tive payload is at most three levels deep
+ * (Shipment -> ShipFrom -> Latitude); this is an order of magnitude beyond that.
+ */
+export const MAX_NESTING_DEPTH = 32;
+
+/**
+ * Whether a parsed body nests deeper than `limit`.
+ *
+ * Iterative on purpose. `JSON.parse` accepts arbitrarily deep input, but every
+ * recursive walk afterwards -- NUL sanitisation, schema validation, and the
+ * driver's own `JSON.stringify` when storing the raw body -- overflows the stack
+ * on it. A 200 KB body of nested brackets, well inside the size limit, was
+ * enough to crash the handler with a retryable 500. A recursive depth check
+ * would crash on exactly the input it exists to catch.
+ */
+export function exceedsNestingDepth(value: unknown, limit: number = MAX_NESTING_DEPTH): boolean {
+  const stack: Array<[unknown, number]> = [[value, 1]];
+  while (stack.length > 0) {
+    const [node, depth] = stack.pop()!;
+    if (node === null || typeof node !== 'object') continue;
+    if (depth > limit) return true;
+    for (const child of Array.isArray(node) ? node : Object.values(node)) {
+      if (child !== null && typeof child === 'object') stack.push([child, depth + 1]);
+    }
+  }
+  return false;
+}

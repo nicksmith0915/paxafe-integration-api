@@ -118,3 +118,12 @@ describe('unit confusion', () => {
     expect(issue.message).not.toContain('seconds');
   });
 });
+
+describe('timestamps beyond what a Date can represent', () => {
+  it('produces a message instead of throwing', () => {
+    // A safe integer, but past the 8.64e15 ms limit of a JavaScript Date.
+    expect(() => checkTimestampWindow(8_700_000_000_000_000, FIXTURE_NOW, WINDOW)).not.toThrow();
+    const [issue] = checkTimestampWindow(8_700_000_000_000_000, FIXTURE_NOW, WINDOW);
+    expect(issue.message).toContain('beyond the representable date range');
+  });
+});

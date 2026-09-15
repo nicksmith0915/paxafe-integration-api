@@ -338,3 +338,30 @@ describe('implausible sensor values', () => {
     expect(repo.persisted[0].sensor.temperature).toBe(10.08);
   });
 });
+
+describe('inputs that used to crash the handler', () => {
+  it('rejects pathologically nested JSON with a 422 instead of overflowing the stack', async () => {
+    const depth = 100_000;
+    const body = JSON.parse('['.repeat(depth) + ']'.repeat(depth));
+
+    await expect(ingestTivePayload(body, 'req-1', deps())).rejects.toMatchObject({
+      code: 'SCHEMA_VALIDATION_FAILED',
+      status: 422,
+      retryable: false,
+      issues: [expect.objectContaining({ message: expect.stringContaining('nested more than 32 levels') })],
+    });
+
+    // Still audited: a stub stands in for the body that could not be serialised.
+    expect(repo.raws[0].input.body).toEqual({ unstorable_body: 'nesting_depth_exceeded', max_depth: 32 });
+    expect(repo.raws[0].status).toBe('rejected');
+  });
+
+  it('rejects a timestamp beyond the representable date range with a 422', async () => {
+    const payload = { ...validPayload('Standard Temperature Shipment'), EntryTimeEpoch: 8_700_000_000_000_000 };
+    await expect(ingestTivePayload(payload, 'req-1', deps())).rejects.toMatchObject({
+      code: 'SCHEMA_VALIDATION_FAILED',
+      status: 422,
+      issues: [expect.objectContaining({ path: 'EntryTimeEpoch' })],
+    });
+  });
+});

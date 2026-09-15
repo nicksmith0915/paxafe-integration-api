@@ -30,7 +30,7 @@ import { TivePayloadSchema, type TivePayload } from '@/lib/providers/tive/schema
 import { transformTivePayload } from '@/lib/providers/tive/transform';
 import type { DataQualityFlag } from '@/lib/px/types';
 import { IngestError, type FieldIssue } from './errors';
-import { payloadShapeIssue, replaceNulBytes } from './sanitize';
+import { exceedsNestingDepth, MAX_NESTING_DEPTH, payloadShapeIssue, replaceNulBytes } from './sanitize';
 import { checkTimestampWindow, utcMatchesEpoch, type IngestionWindow } from './timestamp';
 
 const PROVIDER = 'Tive';
@@ -123,7 +123,15 @@ export async function ingestTivePayload(
 ): Promise<IngestOutcome> {
   // --- Sanitise and record ----------------------------------------------------
 
-  const { value: storableBody, replaced: nulBytesReplaced } = replaceNulBytes(body);
+  /**
+   * A body nested too deeply cannot be walked, validated or even serialised for
+   * storage without overflowing the stack. Record a stub in its place so the
+   * request still leaves an audit row, then reject it.
+   */
+  const tooDeep = exceedsNestingDepth(body);
+  const { value: storableBody, replaced: nulBytesReplaced } = tooDeep
+    ? { value: { unstorable_body: 'nesting_depth_exceeded', max_depth: MAX_NESTING_DEPTH }, replaced: false }
+    : replaceNulBytes(body);
 
   let rawPayloadId: string;
   try {
@@ -160,6 +168,14 @@ export async function ingestTivePayload(
   };
 
   // --- Validate -------------------------------------------------------------
+
+  if (tooDeep) {
+    const issue: FieldIssue = {
+      path: '(root)',
+      message: `Payload is nested more than ${MAX_NESTING_DEPTH} levels deep. A telemetry payload is a flat object of at most a few levels.`,
+    };
+    await reject(IngestError.schemaValidation([issue]), [issue]);
+  }
 
   const shapeIssue = payloadShapeIssue(storableBody);
   if (shapeIssue) await reject(IngestError.schemaValidation([shapeIssue]), [shapeIssue]);

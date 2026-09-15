@@ -11,8 +11,6 @@
  * in the pipeline is the seam where this becomes async if throughput demands it.
  */
 
-import { randomUUID } from 'node:crypto';
-
 import { getConfig } from '@/lib/config';
 import { getDb } from '@/lib/db/client';
 import { createDrizzleRepository } from '@/lib/db/repository';
@@ -20,6 +18,7 @@ import { IngestError } from '@/lib/ingest/errors';
 import { ingestTivePayload } from '@/lib/ingest/pipeline';
 import { extractApiKey, isValidApiKey } from '@/lib/http/auth';
 import { logger } from '@/lib/http/logger';
+import { resolveRequestId } from '@/lib/http/request-id';
 import { jsonResponse, problemResponse, unexpectedError } from '@/lib/http/problem';
 
 /** Comfortably above the largest realistic Tive payload (~2 KB). */
@@ -29,8 +28,8 @@ const MAX_BODY_BYTES = 256 * 1024;
 export const maxDuration = 15;
 
 export async function POST(request: Request): Promise<Response> {
-  // Honour an upstream correlation id when present so traces join up.
-  const requestId = request.headers.get('x-request-id')?.trim() || randomUUID();
+  // Honour a well-formed upstream correlation id so traces join up.
+  const requestId = resolveRequestId(request.headers);
   const startedAt = Date.now();
 
   try {
@@ -51,8 +50,10 @@ export async function POST(request: Request): Promise<Response> {
       return problemResponse(IngestError.payloadTooLarge(MAX_BODY_BYTES), requestId);
     }
 
+    // Content-Length is advisory and can be absent, so measure what arrived --
+    // in bytes: string length counts UTF-16 units, which undercounts multi-byte text.
     const rawBody = await request.text();
-    if (rawBody.length > MAX_BODY_BYTES) {
+    if (Buffer.byteLength(rawBody, 'utf8') > MAX_BODY_BYTES) {
       return problemResponse(IngestError.payloadTooLarge(MAX_BODY_BYTES), requestId);
     }
 
