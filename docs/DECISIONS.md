@@ -190,16 +190,27 @@ rather than by the domain.
 
 ---
 
-## 10. Provider enums are accepted leniently
+## 10. Strict on identity and position, lenient on everything else
 
-**Decision.** Tive's enum-typed strings (`LocationMethod`, `SignalStrength`,
-`Estimation`) are validated as free strings, normalised where recognised, and
-flagged where not (`unknown_location_method`).
+**Decision.** Only the fields that identify and place a reading are validated
+strictly: the IMEI pattern, the timestamp and the coordinate ranges. Everything
+else is accepted and corrected or flagged downstream:
 
-**Why.** Rejecting an entire shipment's telemetry because Tive shipped a new
-location method is the wrong failure mode. Coordinate ranges and the IMEI
-pattern *are* enforced strictly, because a violation there means the data is
-wrong rather than merely unfamiliar.
+- Tive's enum-typed strings (`LocationMethod`, `SignalStrength`, `Estimation`)
+  are free strings, normalised where recognised and flagged where not
+  (`unknown_location_method`).
+- Battery percentage and access-point / tower counts accept any number. A
+  fractional battery is rounded (`battery_rounded`); an impossible one is nulled
+  (`battery_out_of_range`); a fractional or negative count is nulled
+  (`wifi_access_points_invalid`).
+
+**Why.** A violation in identity or position means the reading cannot be
+attributed or placed, which nothing downstream can fix. A violation anywhere else
+means one secondary value is wrong or unfamiliar. Rejecting the whole payload for
+that discards the temperature and position reported alongside it -- in cold chain,
+the two measurements that matter most. An earlier version rejected an entire
+reading because the battery was `65.5`; that was this principle applied
+inconsistently, and is fixed.
 
 ---
 
@@ -245,3 +256,128 @@ will drift — the data is gone rather than replayable.
 misleading for invalid ones: a sender retrying a malformed payload will get a
 422 once the database recovers. That is a bounded cost during an outage, and the
 sender learns the truth as soon as the system is healthy again.
+
+---
+
+## 14. Retryability is derived from the database error class
+
+**Problem found.** Four payloads -- a JSON `null` body, a NUL byte in any string,
+humidity `1000`, temperature `99999` -- passed validation and then failed in
+Postgres. Every database failure was reported as `503 PERSISTENCE_FAILED`,
+`retryable: true`. Tive retries 5xx, so each would have been retried forever by a
+sender told, incorrectly, that trying again might work.
+
+**Decision.** Classify by SQLSTATE. Class `22` (data exception) and `23`
+(integrity constraint violation) describe the data and become
+`422 PAYLOAD_NOT_STORABLE`, non-retryable, with the raw payload marked
+`rejected`. Everything else -- no SQLSTATE at all (network, DNS, TLS), connection,
+serialization, deadlock, resource and operator errors -- stays a retryable 503
+and the payload is marked `failed`, meaning worth re-driving.
+
+**Why unknown classes default to retryable.** For telemetry the two mistakes are
+not symmetric. A retry storm caused by our own bug stops being a problem once the
+bug is fixed, and nothing is lost. Telling a sender to discard a valid reading
+loses it permanently.
+
+**Why this as well as the specific fixes below.** The specific fixes remove the
+four known causes. The classification is what stops the *next* unforeseen one
+from becoming an infinite retry loop. It is tested against real postgres.js
+errors in `db.integration.test.ts`, not only against a hand-built imitation.
+
+---
+
+## 15. Physically impossible sensor values are nulled and flagged
+
+**Decision.** Each canonical value has a plausibility range (`PLAUSIBLE_RANGES`
+in `src/lib/px/policy.ts`). A value outside it is stored as `null` with a
+per-field flag such as `humidity_out_of_range`.
+
+**Why not reject.** A glitching humidity sensor must not cost the temperature and
+position reported in the same payload.
+
+**Why not clamp.** Clamping humidity `1000` to `100` stores a reading that was
+never taken. In a regulated cold chain, invented data is worse than missing data.
+
+**How the bounds were chosen.** From physics or hardware, never from what a
+normal shipment looks like, so a real excursion is never discarded. Temperature
+runs from absolute zero to 150 C: cryogenic cell-therapy shippers operate at
+-196 C, so a "pharma cold chain" bound of, say, -80 C would have silently deleted
+legitimate readings.
+
+**Why a test ties them to the schema.** Every bound sits inside its column's
+precision, and `tests/bounds.test.ts` asserts it against the Drizzle schema. That
+makes "no value that passes the bounds can overflow on insert" a checked property
+rather than a comment.
+
+---
+
+## 16. A conflicting duplicate is a 409, not a duplicate
+
+**Problem found.** Two payloads with the same device and timestamp but different
+temperatures (5 C, then 30 C) returned `201` then `200 duplicate`. The second
+reading was silently discarded and reported as a harmless retry.
+
+**Decision.** When an insert hits the idempotency key, compare the measured
+values against the stored reading. Identical: `200 duplicate`, as before.
+Different: roll back the whole transaction (so the device and shipment upserts do
+not apply either), return `409 CONFLICTING_DUPLICATE`, and mark the raw payload
+`conflict` for review.
+
+**Why it matters here specifically.** In cold chain, a contradiction at the same
+instant is exactly what a real temperature excursion looks like against a stale
+buffered reading. Calling it a duplicate hides the one event the system exists to
+surface.
+
+**What is compared.** Measurements only. The device name is excluded because it
+is user-programmable and can legitimately change mid-shipment; the address is
+excluded because geocoder output varies for identical coordinates. The first
+reading wins: which of two contradictory readings is correct is a question for a
+human, not for insertion order.
+
+---
+
+## 17. Bodies Postgres cannot store are still recorded
+
+**Decision.** NUL bytes (U+0000) are replaced with U+FFFD before the raw payload
+is written, and flagged `nul_bytes_replaced`. A JSON `null` body is written as the
+JSON literal `null` rather than SQL NULL. A body that is not a single object is
+recorded and then rejected with a message naming the actual problem -- including
+that batches are not supported.
+
+**Why.** Postgres refuses U+0000 in both `text` and `jsonb`, and the raw payload
+column is NOT NULL. Either made the audit insert fail, so the request left no
+trace -- the one outcome the raw-payload-first design (decision 8) exists to
+prevent.
+
+**Why U+FFFD rather than removal.** Removal would turn a corrupted device name
+into a plausible-looking valid one. The replacement character keeps the damage
+visible. It does mean the stored raw body is no longer byte-identical to what was
+sent; that is the smallest possible deviation, and the flag records that it
+happened.
+
+---
+
+## 18. Coordinates of exactly (0, 0) are flagged, not rejected
+
+**Decision.** Latitude and longitude of exactly zero are stored as reported and
+flagged `null_island_coordinates`.
+
+**Why.** It is a valid coordinate -- in the Gulf of Guinea -- and also the
+best-known failure signature of a tracker with no position fix. PAXAFE requires
+coordinates, so nulling them is not an option, and substituting a last-known
+position would be a guess. Flagging lets mapping and geofencing exclude them. A
+coordinate merely on the equator or the prime meridian is not flagged.
+
+---
+
+## 19. Epoch seconds are recognised, but not converted
+
+**Decision.** An `EntryTimeEpoch` below `1e11` -- March 1973 in milliseconds, and
+below which every current epoch-*seconds* value falls -- is still rejected as
+`TIMESTAMP_OUT_OF_RANGE`, but the message states that it looks like seconds and
+shows what it would be in milliseconds.
+
+**Why not convert it.** Guessing the unit would make a genuinely corrupt timestamp
+look valid. Sending seconds where milliseconds are expected is the classic unit
+bug in webhook integrations; the sender should be told plainly and fix it at the
+source, rather than be told their reading is 56 years old.

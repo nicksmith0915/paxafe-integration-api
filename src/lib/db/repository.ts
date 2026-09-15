@@ -6,7 +6,7 @@
  * here beyond the shipment/device context helpers.
  */
 
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 import type { DataQualityFlag, PxLocationPayload, PxSensorPayload } from '@/lib/px/types';
 import type { DrizzleDb } from './client';
@@ -38,7 +38,12 @@ export async function insertRawPayload(db: DrizzleDb, input: RawPayloadInput): P
     .values({
       requestId: input.requestId,
       provider: input.provider,
-      body: input.body as object,
+      /**
+       * A JSON `null` body is valid JSON and still worth recording, but Drizzle
+       * binds a JS null as SQL NULL, which the NOT NULL column rejects. Writing
+       * the JSON literal keeps the audit row -- and its rejection -- on record.
+       */
+      body: input.body === null ? sql`'null'::jsonb` : (input.body as object),
       status: 'received',
       deviceImei: input.deviceImei ?? null,
       recordedAt: input.recordedAt ?? null,
@@ -79,11 +84,61 @@ export interface PersistReadingsInput {
   } | null;
 }
 
+/**
+ * What happened to a reading whose idempotency key is (device_imei, recorded_at):
+ *
+ *   created    first time this key was seen
+ *   duplicate  key existed with identical measurements -- a retried webhook
+ *   conflict   key existed with *different* measurements; nothing was written
+ */
+export type PersistOutcome = 'created' | 'duplicate' | 'conflict';
+
 export interface PersistReadingsResult {
+  outcome: PersistOutcome;
   sensorId: string | null;
   locationId: string | null;
-  /** True when the unique (device_imei, recorded_at) key already existed. */
-  duplicate: boolean;
+}
+
+/** Thrown inside the transaction to roll back a conflicting write. */
+class ConflictingReading extends Error {}
+
+/**
+ * The measured values of a reading, in a fixed order. Deliberately excludes the
+ * device name (renameable mid-shipment) and address (geocoder output that can
+ * vary for identical coordinates): a conflict means the *measurements* differ.
+ * Values from the database come back through `numeric` columns in number mode,
+ * so both sides compare as already-rounded numbers.
+ */
+function measurementFingerprint(values: {
+  temperature: number | null;
+  humidity: number | null;
+  lightLevel: number | null;
+  accelX: number | null;
+  accelY: number | null;
+  accelZ: number | null;
+  accelMagnitude: number | null;
+  latitude: number | null;
+  longitude: number | null;
+  locationAccuracy: number | null;
+  batteryLevel: number | null;
+  cellularDbm: number | null;
+  wifiAccessPoints: number | null;
+}): string {
+  return JSON.stringify([
+    values.temperature,
+    values.humidity,
+    values.lightLevel,
+    values.accelX,
+    values.accelY,
+    values.accelZ,
+    values.accelMagnitude,
+    values.latitude,
+    values.longitude,
+    values.locationAccuracy,
+    values.batteryLevel,
+    values.cellularDbm,
+    values.wifiAccessPoints,
+  ]);
 }
 
 /**
@@ -95,8 +150,24 @@ export async function persistReadings(
   db: DrizzleDb,
   input: PersistReadingsInput,
 ): Promise<PersistReadingsResult> {
+  const recordedAt = new Date(input.sensor.timestamp);
+
+  try {
+    return await writeReadings(db, input, recordedAt);
+  } catch (error) {
+    if (error instanceof ConflictingReading) {
+      return { outcome: 'conflict', sensorId: null, locationId: null };
+    }
+    throw error;
+  }
+}
+
+async function writeReadings(
+  db: DrizzleDb,
+  input: PersistReadingsInput,
+  recordedAt: Date,
+): Promise<PersistReadingsResult> {
   const { sensor, location, flags } = input;
-  const recordedAt = new Date(sensor.timestamp);
 
   return db.transaction(async (tx) => {
     await tx
@@ -202,11 +273,48 @@ export async function persistReadings(
       .onConflictDoNothing({ target: [locationReadings.deviceImei, locationReadings.recordedAt] })
       .returning({ id: locationReadings.id });
 
-    return {
-      sensorId: sensorRow?.id ?? null,
-      locationId: locationRow?.id ?? null,
-      duplicate: !sensorRow && !locationRow,
-    };
+    if (sensorRow || locationRow) {
+      return { outcome: 'created', sensorId: sensorRow?.id ?? null, locationId: locationRow?.id ?? null };
+    }
+
+    /**
+     * Both inserts hit the idempotency key. Whether that is a harmless retry or
+     * a contradiction depends on what is already stored, so compare the
+     * measurements. On a contradiction the transaction is rolled back, so the
+     * device and shipment upserts above do not apply either.
+     */
+    const [storedSensor] = await tx
+      .select()
+      .from(sensorReadings)
+      .where(and(eq(sensorReadings.deviceImei, sensor.device_imei), eq(sensorReadings.recordedAt, recordedAt)));
+    const [storedLocation] = await tx
+      .select()
+      .from(locationReadings)
+      .where(and(eq(locationReadings.deviceImei, location.device_imei), eq(locationReadings.recordedAt, recordedAt)));
+
+    const incoming = measurementFingerprint({
+      temperature: sensor.temperature,
+      humidity: sensor.humidity,
+      lightLevel: sensor.light_level,
+      accelX: sensor.accelerometer?.x ?? null,
+      accelY: sensor.accelerometer?.y ?? null,
+      accelZ: sensor.accelerometer?.z ?? null,
+      accelMagnitude: sensor.accelerometer?.magnitude ?? null,
+      latitude: location.latitude,
+      longitude: location.longitude,
+      locationAccuracy: location.location_accuracy,
+      batteryLevel: location.battery_level,
+      cellularDbm: location.cellular_dbm,
+      wifiAccessPoints: location.wifi_access_points,
+    });
+
+    const stored =
+      storedSensor && storedLocation
+        ? measurementFingerprint({ ...storedSensor, ...storedLocation })
+        : null;
+
+    if (stored !== incoming) throw new ConflictingReading();
+    return { outcome: 'duplicate', sensorId: null, locationId: null };
   });
 }
 

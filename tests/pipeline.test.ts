@@ -29,8 +29,8 @@ interface RawRecord {
 class FakeRepository implements TelemetryRepository {
   raws: RawRecord[] = [];
   persisted: PersistReadingsInput[] = [];
-  /** Idempotency key -> already stored, mirroring the unique index. */
-  private seen = new Set<string>();
+  /** Idempotency key -> stored measurements, mirroring the unique index. */
+  private stored = new Map<string, string>();
   persistShouldThrow: Error | null = null;
   insertShouldThrow: Error | null = null;
   finalizeShouldThrow: Error | null = null;
@@ -57,12 +57,23 @@ class FakeRepository implements TelemetryRepository {
   async persistReadings(input: PersistReadingsInput): Promise<PersistReadingsResult> {
     if (this.persistShouldThrow) throw this.persistShouldThrow;
     const key = `${input.sensor.device_imei}@${input.sensor.timestamp}`;
+    const { sensor, location } = input;
+    const measurements = JSON.stringify([
+      sensor.temperature, sensor.humidity, sensor.light_level, sensor.accelerometer,
+      location.latitude, location.longitude, location.battery_level, location.cellular_dbm,
+    ]);
     this.persisted.push(input);
-    if (this.seen.has(key)) {
-      return { sensorId: null, locationId: null, duplicate: true };
+
+    const existing = this.stored.get(key);
+    if (existing !== undefined) {
+      return {
+        outcome: existing === measurements ? 'duplicate' : 'conflict',
+        sensorId: null,
+        locationId: null,
+      };
     }
-    this.seen.add(key);
-    return { sensorId: `s-${this.seen.size}`, locationId: `l-${this.seen.size}`, duplicate: false };
+    this.stored.set(key, measurements);
+    return { outcome: 'created', sensorId: `s-${this.stored.size}`, locationId: `l-${this.stored.size}` };
   }
 }
 
@@ -198,5 +209,132 @@ describe('persistence failure', () => {
 
     // Distinguished from 'rejected': the payload was fine, we were not.
     expect(repo.raws[0].status).toBe('failed');
+  });
+});
+
+/**
+ * Shaped like a real failure: Drizzle's "Failed query" wrapper, with the
+ * postgres.js error carrying the SQLSTATE as its cause.
+ */
+function pgError(sqlstate: string, message: string): Error {
+  return new Error('Failed query: insert into "sensor_readings" (...)\nparams: 863257063350583', {
+    cause: Object.assign(new Error(message), { code: sqlstate }),
+  });
+}
+
+describe('retryability follows the database error class', () => {
+  it.each([
+    ['22003', 'numeric field overflow'],
+    ['22P05', 'unsupported Unicode escape sequence'],
+    ['23502', 'null value in column violates not-null constraint'],
+  ])('a data error (%s) during persistence is a permanent 422, not a retryable 503', async (sqlstate, message) => {
+    repo.persistShouldThrow = pgError(sqlstate, message);
+
+    await expect(
+      ingestTivePayload(validPayload('Standard Temperature Shipment'), 'req-1', deps()),
+    ).rejects.toMatchObject({ code: 'PAYLOAD_NOT_STORABLE', status: 422, retryable: false });
+
+    // The payload was at fault, so it is 'rejected' -- not 'failed', which
+    // would mark it as worth re-driving once the database recovers.
+    expect(repo.raws[0].status).toBe('rejected');
+  });
+
+  it('a data error while recording the raw payload is also permanent', async () => {
+    repo.insertShouldThrow = pgError('23502', 'null value in column "body"');
+
+    await expect(
+      ingestTivePayload(validPayload('Minimal Data Payload'), 'req-1', deps()),
+    ).rejects.toMatchObject({ code: 'PAYLOAD_NOT_STORABLE', status: 422, retryable: false });
+  });
+
+  it.each([
+    ['08006', 'connection failure'],
+    ['40P01', 'deadlock detected'],
+    ['57P01', 'terminating connection due to administrator command'],
+  ])('an availability error (%s) stays a retryable 503', async (sqlstate, message) => {
+    repo.persistShouldThrow = pgError(sqlstate, message);
+
+    await expect(
+      ingestTivePayload(validPayload('Standard Temperature Shipment'), 'req-1', deps()),
+    ).rejects.toMatchObject({ code: 'PERSISTENCE_FAILED', status: 503, retryable: true });
+    expect(repo.raws[0].status).toBe('failed');
+  });
+});
+
+describe('payload shape', () => {
+  it.each([
+    ['null', null, 'received null'],
+    ['a string', 'hello', 'received string'],
+    ['a number', 42, 'received number'],
+  ])('rejects a body that is %s, and still records it', async (_label, body, expected) => {
+    await expect(ingestTivePayload(body, 'req-1', deps())).rejects.toMatchObject({
+      code: 'SCHEMA_VALIDATION_FAILED',
+      status: 422,
+      issues: [expect.objectContaining({ path: '(root)', message: expect.stringContaining(expected) })],
+    });
+    expect(repo.raws).toHaveLength(1);
+    expect(repo.raws[0].input.body).toEqual(body);
+    expect(repo.raws[0].status).toBe('rejected');
+  });
+
+  it('explains that batches are unsupported when sent an array', async () => {
+    const batch = [validPayload('Standard Temperature Shipment')];
+    await expect(ingestTivePayload(batch, 'req-1', deps())).rejects.toMatchObject({
+      issues: [expect.objectContaining({ message: expect.stringContaining('Batches are not supported') })],
+    });
+  });
+});
+
+describe('NUL bytes', () => {
+  const NUL = String.fromCharCode(0);
+  const REPLACEMENT = String.fromCharCode(0xfffd);
+
+  it('replaces them before recording, so the audit row can be written', async () => {
+    const payload = { ...validPayload('Standard Temperature Shipment'), DeviceName: `A571${NUL}992` };
+
+    const outcome = await ingestTivePayload(payload, 'req-1', deps());
+
+    expect(outcome.status).toBe('processed');
+    expect(outcome.data_quality_flags).toContain('nul_bytes_replaced');
+    const stored = repo.raws[0].input.body as { DeviceName: string };
+    expect(stored.DeviceName).toBe(`A571${REPLACEMENT}992`);
+    expect(stored.DeviceName.includes(NUL)).toBe(false);
+    expect(outcome.device_id).toBe(`A571${REPLACEMENT}992`);
+  });
+});
+
+describe('conflicting duplicates', () => {
+  it('rejects a different reading for an existing key instead of calling it a duplicate', async () => {
+    const original = validPayload('GPS Location Shipment');
+    const contradiction = { ...original, Temperature: { Celsius: 30, Fahrenheit: 86 } };
+
+    await ingestTivePayload(original, 'req-1', deps());
+    await expect(ingestTivePayload(contradiction, 'req-2', deps())).rejects.toMatchObject({
+      code: 'CONFLICTING_DUPLICATE',
+      status: 409,
+      retryable: false,
+    });
+
+    // Retained for a human to review, and distinguishable from a plain reject.
+    expect(repo.raws.map((r) => r.status)).toEqual(['processed', 'conflict']);
+  });
+
+  it('still treats an identical replay as a harmless duplicate', async () => {
+    const payload = validPayload('GPS Location Shipment');
+    await ingestTivePayload(payload, 'req-1', deps());
+    await expect(ingestTivePayload(payload, 'req-2', deps())).resolves.toMatchObject({ status: 'duplicate' });
+  });
+});
+
+describe('implausible sensor values', () => {
+  it('stores a glitching humidity sensor as null without losing the rest of the reading', async () => {
+    const payload = { ...validPayload('Standard Temperature Shipment'), Humidity: { Percentage: 1000 } };
+
+    const outcome = await ingestTivePayload(payload, 'req-1', deps());
+
+    expect(outcome.status).toBe('processed');
+    expect(outcome.data_quality_flags).toContain('humidity_out_of_range');
+    expect(repo.persisted[0].sensor.humidity).toBeNull();
+    expect(repo.persisted[0].sensor.temperature).toBe(10.08);
   });
 });

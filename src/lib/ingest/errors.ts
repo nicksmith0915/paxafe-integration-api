@@ -13,6 +13,8 @@ export const ERROR_CODES = {
   PAYLOAD_TOO_LARGE: 'PAYLOAD_TOO_LARGE',
   SCHEMA_VALIDATION_FAILED: 'SCHEMA_VALIDATION_FAILED',
   TIMESTAMP_OUT_OF_RANGE: 'TIMESTAMP_OUT_OF_RANGE',
+  CONFLICTING_DUPLICATE: 'CONFLICTING_DUPLICATE',
+  PAYLOAD_NOT_STORABLE: 'PAYLOAD_NOT_STORABLE',
   TRANSFORM_FAILED: 'TRANSFORM_FAILED',
   PERSISTENCE_FAILED: 'PERSISTENCE_FAILED',
   INTERNAL_ERROR: 'INTERNAL_ERROR',
@@ -71,6 +73,34 @@ export class IngestError extends Error {
       422,
       'Payload does not satisfy the Tive telemetry schema.',
       { issues },
+    );
+  }
+
+  /**
+   * The idempotency key already holds a reading with *different* measurements.
+   * Retrying cannot help, and silently answering "duplicate" would hide what may
+   * be a temperature excursion behind what looks like a harmless replay.
+   */
+  static conflictingDuplicate(issues: FieldIssue[]): IngestError {
+    return new IngestError(
+      ERROR_CODES.CONFLICTING_DUPLICATE,
+      409,
+      'A different reading is already stored for this device at this timestamp.',
+      { issues },
+    );
+  }
+
+  /**
+   * The database rejected the data itself (SQLSTATE class 22 or 23). Distinct
+   * from PERSISTENCE_FAILED, which means the database was unavailable and a
+   * retry may well succeed.
+   */
+  static notStorable(cause: unknown): IngestError {
+    return new IngestError(
+      ERROR_CODES.PAYLOAD_NOT_STORABLE,
+      422,
+      'The payload contains a value that cannot be stored. Resending it unchanged will not succeed.',
+      { cause, retryable: false },
     );
   }
 

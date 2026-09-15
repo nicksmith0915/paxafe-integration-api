@@ -99,3 +99,22 @@ describe('ingestion window is policy, not schema', () => {
     expect(checkTimestampWindow(now + 120 * 60_000, now, WINDOW)).toHaveLength(1);
   });
 });
+
+describe('unit confusion', () => {
+  it('names seconds-instead-of-milliseconds rather than reporting a 1970 reading', () => {
+    const nowSeconds = Math.floor(FIXTURE_NOW / 1000);
+    const [issue] = checkTimestampWindow(nowSeconds, FIXTURE_NOW, WINDOW);
+    expect(issue.message).toContain('looks like epoch seconds');
+    expect(issue.message).toContain(new Date(nowSeconds * 1000).toISOString());
+  });
+
+  it('still rejects rather than silently converting the unit', () => {
+    expect(checkTimestampWindow(Math.floor(FIXTURE_NOW / 1000), FIXTURE_NOW, WINDOW)).toHaveLength(1);
+  });
+
+  it('keeps the ordinary message for a real but stale millisecond timestamp', () => {
+    const [issue] = checkTimestampWindow(Date.parse('2021-01-01T00:00:00Z'), FIXTURE_NOW, WINDOW);
+    expect(issue.message).toContain('ingestion window');
+    expect(issue.message).not.toContain('seconds');
+  });
+});

@@ -143,3 +143,59 @@ export function parseFormattedAddress(formatted: string | null | undefined): {
   address.locality = remaining[remaining.length - 1] ?? null;
   return { address, parsed: true };
 }
+
+/**
+ * Physical plausibility bounds for canonical sensor and location values.
+ *
+ * A tracker with a failing sensor reports values that cannot be true -- humidity
+ * of 1000%, a temperature of 99999 C. Those values are stored as null and
+ * flagged, never clamped (a clamped reading is invented data) and never grounds
+ * for rejecting the whole payload (a glitching humidity sensor must not cost the
+ * temperature and location reported alongside it).
+ *
+ * Each bound is chosen from physics or hardware rather than from what a normal
+ * shipment looks like, so a real excursion is never discarded:
+ *
+ *   temperature        absolute zero to 150 C -- cryogenic cell-therapy shippers
+ *                      run at -196 C, and nothing survives 150 C
+ *   humidity           0-100 %, by definition
+ *   light_level        0-200,000 lux; direct sunlight peaks near 120,000
+ *   accelerometer      +/-1000 g, beyond any handling shock a tracker survives
+ *   cellular_dbm       -200 to 0 dBm; a received signal is always negative
+ *   battery_level      0-100 %, by definition
+ *   location_accuracy  0 m up to half Earth's circumference
+ *   wifi_access_points 0-10,000, far beyond any real scan
+ *
+ * Every bound also sits inside the precision of its database column -- asserted
+ * by a test -- so no value that passes this check can overflow on insert.
+ */
+export const PLAUSIBLE_RANGES = {
+  temperature: { min: -273.15, max: 150 },
+  humidity: { min: 0, max: 100 },
+  light_level: { min: 0, max: 200_000 },
+  accelerometer: { min: -1000, max: 1000 },
+  cellular_dbm: { min: -200, max: 0 },
+  battery_level: { min: 0, max: 100 },
+  location_accuracy: { min: 0, max: 20_037_508 },
+  wifi_access_points: { min: 0, max: 10_000 },
+} as const;
+
+export interface Range {
+  min: number;
+  max: number;
+}
+
+/**
+ * Returns the value when it lies within the inclusive range, otherwise null
+ * with `outOfRange` set. An absent value is simply absent, not out of range.
+ */
+export function withinRange(
+  value: number | null | undefined,
+  range: Range,
+): { value: number | null; outOfRange: boolean } {
+  if (value === null || value === undefined) return { value: null, outOfRange: false };
+  if (!Number.isFinite(value) || value < range.min || value > range.max) {
+    return { value: null, outOfRange: true };
+  }
+  return { value, outOfRange: false };
+}

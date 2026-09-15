@@ -265,6 +265,32 @@ enforces this; inserts use `ON CONFLICT DO NOTHING`. A replay returns **200 with
 `"status": "duplicate"`** instead of 201, so a retrying sender can tell the
 difference.
 
+"Same key" is not the same as "same reading". When the key already exists, the
+stored measurements are compared: a key reused with *different* values returns
+**409 `CONFLICTING_DUPLICATE`** and writes nothing. In cold chain that
+contradiction is what a real excursion looks like against a stale buffered
+reading, so reporting it as a harmless duplicate would hide the one event worth
+surfacing.
+
+### Hostile and malformed input
+
+Every case below was found by probing the running API, and each is now covered
+by tests.
+
+| Input | Handling |
+|---|---|
+| Sensor value that cannot be true (humidity `1000`, temperature `99999`) | Stored as `null` with a per-field flag; the rest of the reading is kept. Bounds come from physics, so a -196 C cryogenic reading is not discarded. |
+| Fractional battery (`65.5`) | Rounded and flagged, rather than rejecting the whole reading |
+| NUL byte in any string | Replaced with U+FFFD before storage and flagged, because Postgres cannot store it |
+| Body that is `null`, a string, or an array | Recorded, then rejected with a message naming the problem (arrays: batches unsupported) |
+| Coordinates exactly `(0, 0)` | Stored and flagged `null_island_coordinates` -- the signature of a missing fix |
+| Epoch in seconds instead of milliseconds | Rejected with a message saying so, not silently converted |
+| Anything the database still refuses | Classified by SQLSTATE: data errors are a permanent 422, availability errors a retryable 503 |
+
+The last row is the general safeguard. Before it, every database error was a
+retryable 503, so a payload the database could never accept would have been
+retried by the sender forever.
+
 ---
 
 ## Database
@@ -301,21 +327,24 @@ instances racing to migrate is a reliable way to corrupt a schema.
 ## Testing
 
 ```bash
-npm test              # 93 tests
+npm test              # 170 tests
 npm run test:coverage # thresholds enforced
 ```
 
 | Suite | What it protects |
 |---|---|
 | `transform.test.ts` | Both PAXAFE examples reproduced exactly; identity mapping; rounding; flags |
-| `conformance.test.ts` | Every output validated against the published JSON Schemas with ajv |
+| `conformance.test.ts` | Every output validated against the published JSON Schemas with ajv, including after impossible values are nulled |
+| `bounds.test.ts` | Every plausibility bound fits its database column, so a bounded value cannot overflow |
+| `db-errors.test.ts` | SQLSTATE classification: which database errors are permanent and which are retryable |
+| `sanitize.test.ts` | NUL replacement in keys and values; payload shape checks |
 | `validation.test.ts` | All six `invalid_payloads` fixtures, each with its rejection reason |
 | `pipeline.test.ts` | Ordering, status transitions, idempotency, error paths |
 | `policy.test.ts` | Rounding edge cases, category boundaries, address parsing |
 | `auth.test.ts` | Key comparison and header extraction |
 | `problem.test.ts` | Error response contract; no internal detail leakage |
 | `config.test.ts` | Environment validation |
-| `db.integration.test.ts` | Unique-index idempotency, transaction atomicity, numeric round-tripping, device upsert ordering — **skipped** unless `TEST_DATABASE_URL` is set |
+| `db.integration.test.ts` | Unique-index idempotency, conflict rollback, numeric round-tripping, real overflow and NUL errors classified correctly — **skipped** unless `TEST_DATABASE_URL` is set |
 
 Tests read `schemas/sample-tive-payloads.json` directly rather than restating
 payloads as literals, so the shipped fixtures stay the single source of truth.

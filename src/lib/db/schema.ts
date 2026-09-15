@@ -33,7 +33,13 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 
-export const INGEST_STATUS = ['processed', 'duplicate', 'rejected', 'failed'] as const;
+/**
+ * Lifecycle of a raw payload. `rejected` means the payload was at fault and will
+ * never succeed; `failed` means we were, and it can be re-driven; `conflict`
+ * means it collided with a different stored reading and needs a human.
+ * Stored as text rather than a Postgres enum so adding a state needs no migration.
+ */
+export const INGEST_STATUS = ['received', 'processed', 'duplicate', 'conflict', 'rejected', 'failed'] as const;
 export type IngestStatus = (typeof INGEST_STATUS)[number];
 
 export const devices = pgTable(

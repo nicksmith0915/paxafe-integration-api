@@ -27,6 +27,12 @@ export interface IngestionWindow {
 }
 
 const MS_PER_DAY = 86_400_000;
+
+/**
+ * 1e11 ms is March 1973. Any current epoch-seconds value (about 1.8e9) is far
+ * below it, while no plausible millisecond timestamp for live telemetry is.
+ */
+const SECONDS_HEURISTIC_LIMIT_MS = 100_000_000_000;
 const MS_PER_MINUTE = 60_000;
 
 export function checkTimestampWindow(
@@ -49,6 +55,26 @@ export function checkTimestampWindow(
   }
 
   if (epochMs < pastLimit) {
+    /**
+     * Epoch seconds sent where milliseconds are expected is the classic unit bug
+     * in webhook integrations, and it lands in January 1970. It is still
+     * rejected -- silently guessing the unit would make a genuinely corrupt
+     * timestamp look valid -- but the message says what almost certainly
+     * happened instead of reporting a mysterious 56-year-old reading.
+     */
+    if (epochMs > 0 && epochMs < SECONDS_HEURISTIC_LIMIT_MS) {
+      const asMilliseconds = epochMs * 1000;
+      return [
+        {
+          path: 'EntryTimeEpoch',
+          message:
+            `Timestamp ${epochMs} looks like epoch seconds, not milliseconds ` +
+            `(as milliseconds it would be ${new Date(asMilliseconds).toISOString()}). ` +
+            `EntryTimeEpoch must be in milliseconds.`,
+        },
+      ];
+    }
+
     return [
       {
         path: 'EntryTimeEpoch',

@@ -1,9 +1,9 @@
 /**
  * Ingestion pipeline.
  *
- *   store raw -> validate -> check window -> transform -> persist -> finalize
+ *   sanitise -> store raw -> validate -> check window -> transform -> persist -> finalize
  *
- * Two properties drive the ordering:
+ * Three properties drive the ordering:
  *
  *  1. The raw body is persisted *first*, before anything can reject it. A
  *     validation bug, a transform bug or a schema drift on Tive's side then
@@ -12,6 +12,9 @@
  *     a worker without changing the contract the sender sees.
  *  2. Rejections are recorded, not just returned. `raw_payloads.status` plus
  *     `error_code` makes "what is this sender getting wrong?" a SQL query.
+ *  3. Retryability is derived, never assumed. A database failure is reported as
+ *     retryable only when the database itself was the problem; when it rejected
+ *     the data, a retry would fail identically forever.
  *
  * Dependencies are injected so the whole pipeline can be exercised against a
  * stub database and a fixed clock.
@@ -19,15 +22,15 @@
 
 import type { z } from 'zod';
 
-import type {
-  PersistReadingsResult,
-  TelemetryRepository,
-} from '@/lib/db/repository';
+import { classifyDbError } from '@/lib/db/errors';
+import type { PersistReadingsResult, TelemetryRepository } from '@/lib/db/repository';
+import type { IngestStatus } from '@/lib/db/schema';
 import { logger } from '@/lib/http/logger';
 import { TivePayloadSchema, type TivePayload } from '@/lib/providers/tive/schema';
 import { transformTivePayload } from '@/lib/providers/tive/transform';
 import type { DataQualityFlag } from '@/lib/px/types';
 import { IngestError, type FieldIssue } from './errors';
+import { payloadShapeIssue, replaceNulBytes } from './sanitize';
 import { checkTimestampWindow, utcMatchesEpoch, type IngestionWindow } from './timestamp';
 
 const PROVIDER = 'Tive';
@@ -62,15 +65,18 @@ function toFieldIssues(error: z.ZodError): FieldIssue[] {
  * be attributed to a device. Never throws: this is a convenience, not a check.
  */
 function peekDeviceImei(body: unknown): string | null {
-  if (typeof body !== 'object' || body === null) return null;
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
   const value = (body as Record<string, unknown>).DeviceId;
   return typeof value === 'string' ? value : null;
 }
 
 function peekEpoch(body: unknown): Date | null {
-  if (typeof body !== 'object' || body === null) return null;
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
   const value = (body as Record<string, unknown>).EntryTimeEpoch;
-  return typeof value === 'number' && Number.isFinite(value) ? new Date(value) : null;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const date = new Date(value);
+  // An absurd epoch must not become the reason the audit row cannot be written.
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 /**
@@ -84,7 +90,7 @@ async function safeFinalize(
   deps: IngestDeps,
   requestId: string,
   rawPayloadId: string,
-  status: 'processed' | 'duplicate' | 'rejected' | 'failed',
+  status: IngestStatus,
   error?: { code: string; detail?: unknown },
 ): Promise<void> {
   try {
@@ -94,9 +100,20 @@ async function safeFinalize(
       request_id: requestId,
       event: 'ingest.finalize_failed',
       status,
-      error: cause instanceof Error ? cause.message : String(cause),
+      error: classifyDbError(cause).message,
     });
   }
+}
+
+/**
+ * Translates a database failure into the error the sender should see. When the
+ * database rejected the data itself, retrying is pointless: 422. When it was
+ * unavailable, the payload is fine and a retry is exactly right: 503.
+ */
+function persistenceError(cause: unknown, whenUnavailable: string): IngestError {
+  const info = classifyDbError(cause);
+  if (!info.retryable) return IngestError.notStorable(cause);
+  return new IngestError('PERSISTENCE_FAILED', 503, whenUnavailable, { cause, retryable: true });
 }
 
 export async function ingestTivePayload(
@@ -104,74 +121,60 @@ export async function ingestTivePayload(
   requestId: string,
   deps: IngestDeps,
 ): Promise<IngestOutcome> {
-  /**
-   * The database is unavailable far more often than any other dependency, and
-   * this is the first thing that touches it. Without this guard the failure
-   * surfaces as a generic 500, telling the sender nothing about whether a retry
-   * could help -- when in fact it is the one failure that is always retryable.
-   */
+  // --- Sanitise and record ----------------------------------------------------
+
+  const { value: storableBody, replaced: nulBytesReplaced } = replaceNulBytes(body);
+
   let rawPayloadId: string;
   try {
     rawPayloadId = await deps.repo.insertRawPayload({
       requestId,
       provider: PROVIDER,
-      body,
-      deviceImei: peekDeviceImei(body),
-      recordedAt: peekEpoch(body),
+      body: storableBody,
+      deviceImei: peekDeviceImei(storableBody),
+      recordedAt: peekEpoch(storableBody),
     });
   } catch (cause) {
+    const info = classifyDbError(cause);
     logger.error('failed to record raw payload', {
       request_id: requestId,
       event: 'ingest.failed',
-      error_code: 'PERSISTENCE_FAILED',
-      device_imei: peekDeviceImei(body),
-      error: cause instanceof Error ? cause.message : String(cause),
+      error_code: info.retryable ? 'PERSISTENCE_FAILED' : 'PAYLOAD_NOT_STORABLE',
+      sqlstate: info.sqlstate,
+      device_imei: peekDeviceImei(storableBody),
+      error: info.message,
     });
-    throw new IngestError(
-      'PERSISTENCE_FAILED',
-      503,
-      'Could not record the payload. Retry later.',
-      { cause, retryable: true },
-    );
+    throw persistenceError(cause, 'Could not record the payload. Retry later.');
   }
+
+  const reject = async (error: IngestError, detail: unknown): Promise<never> => {
+    await safeFinalize(deps, requestId, rawPayloadId, 'rejected', { code: error.code, detail });
+    logger.warn('payload rejected', {
+      request_id: requestId,
+      event: 'ingest.rejected',
+      error_code: error.code,
+      device_imei: peekDeviceImei(storableBody),
+      issue_count: error.issues.length,
+    });
+    throw error;
+  };
 
   // --- Validate -------------------------------------------------------------
 
-  const parsed = TivePayloadSchema.safeParse(body);
+  const shapeIssue = payloadShapeIssue(storableBody);
+  if (shapeIssue) await reject(IngestError.schemaValidation([shapeIssue]), [shapeIssue]);
+
+  const parsed = TivePayloadSchema.safeParse(storableBody);
   if (!parsed.success) {
     const issues = toFieldIssues(parsed.error);
-    await safeFinalize(deps, requestId, rawPayloadId, 'rejected', {
-      code: 'SCHEMA_VALIDATION_FAILED',
-      detail: issues,
-    });
-    logger.warn('payload rejected by schema validation', {
-      request_id: requestId,
-      event: 'ingest.rejected',
-      error_code: 'SCHEMA_VALIDATION_FAILED',
-      device_imei: peekDeviceImei(body),
-      issue_count: issues.length,
-    });
-    throw IngestError.schemaValidation(issues);
+    await reject(IngestError.schemaValidation(issues), issues);
   }
-
-  const payload: TivePayload = parsed.data;
+  const payload: TivePayload = parsed.data!;
 
   // --- Ingestion window (policy, not schema) --------------------------------
 
   const windowIssues = checkTimestampWindow(payload.EntryTimeEpoch, deps.now(), deps.window);
-  if (windowIssues.length > 0) {
-    await safeFinalize(deps, requestId, rawPayloadId, 'rejected', {
-      code: 'TIMESTAMP_OUT_OF_RANGE',
-      detail: windowIssues,
-    });
-    logger.warn('payload outside ingestion window', {
-      request_id: requestId,
-      event: 'ingest.rejected',
-      error_code: 'TIMESTAMP_OUT_OF_RANGE',
-      device_imei: payload.DeviceId,
-    });
-    throw IngestError.timestampOutOfRange(windowIssues);
-  }
+  if (windowIssues.length > 0) await reject(IngestError.timestampOutOfRange(windowIssues), windowIssues);
 
   if (!utcMatchesEpoch(payload.EntryTimeUtc, payload.EntryTimeEpoch)) {
     // Not fatal: EntryTimeEpoch is authoritative. Worth knowing if it recurs.
@@ -184,7 +187,11 @@ export async function ingestTivePayload(
 
   // --- Transform and persist ------------------------------------------------
 
-  const { sensor, location, flags } = transformTivePayload(payload);
+  const transformed = transformTivePayload(payload);
+  const { sensor, location } = transformed;
+  const flags: DataQualityFlag[] = nulBytesReplaced
+    ? ['nul_bytes_replaced', ...transformed.flags]
+    : transformed.flags;
 
   let result: PersistReadingsResult;
   try {
@@ -206,25 +213,48 @@ export async function ingestTivePayload(
         : null,
     });
   } catch (cause) {
-    await safeFinalize(deps, requestId, rawPayloadId, 'failed', {
-      code: 'PERSISTENCE_FAILED',
-      detail: { message: cause instanceof Error ? cause.message : String(cause) },
+    const info = classifyDbError(cause);
+    const error = persistenceError(cause, 'Could not persist the reading. Retry later.');
+    // 'rejected' when the data was at fault, 'failed' when we were -- only the
+    // latter is worth re-driving once the database recovers.
+    await safeFinalize(deps, requestId, rawPayloadId, info.retryable ? 'failed' : 'rejected', {
+      code: error.code,
+      detail: { sqlstate: info.sqlstate, message: info.message },
     });
     logger.error('failed to persist readings', {
       request_id: requestId,
       event: 'ingest.failed',
-      error_code: 'PERSISTENCE_FAILED',
+      error_code: error.code,
+      sqlstate: info.sqlstate,
       device_imei: sensor.device_imei,
-      error: cause instanceof Error ? cause.message : String(cause),
+      error: info.message,
     });
-    // Retryable: the payload was valid, the database was not available.
-    throw new IngestError('PERSISTENCE_FAILED', 503, 'Could not persist the reading. Retry later.', {
-      cause,
-      retryable: true,
-    });
+    throw error;
   }
 
-  const status = result.duplicate ? 'duplicate' : 'processed';
+  if (result.outcome === 'conflict') {
+    const issues: FieldIssue[] = [
+      {
+        path: 'EntryTimeEpoch',
+        message:
+          `Device ${sensor.device_imei} already has a reading at ${new Date(sensor.timestamp).toISOString()} ` +
+          'with different measurements. The stored reading was kept; this payload is retained for review.',
+      },
+    ];
+    await safeFinalize(deps, requestId, rawPayloadId, 'conflict', {
+      code: 'CONFLICTING_DUPLICATE',
+      detail: issues,
+    });
+    logger.warn('conflicting reading for an existing idempotency key', {
+      request_id: requestId,
+      event: 'ingest.conflict',
+      error_code: 'CONFLICTING_DUPLICATE',
+      device_imei: sensor.device_imei,
+    });
+    throw IngestError.conflictingDuplicate(issues);
+  }
+
+  const status = result.outcome === 'duplicate' ? 'duplicate' : 'processed';
   await safeFinalize(deps, requestId, rawPayloadId, status);
 
   logger.info('payload ingested', {

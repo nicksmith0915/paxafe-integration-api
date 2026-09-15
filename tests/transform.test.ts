@@ -180,3 +180,90 @@ describe('Tive -> PAXAFE transform', () => {
     });
   });
 });
+
+describe('physically implausible values', () => {
+  function transformWith(overrides: Record<string, unknown>) {
+    return transformTivePayload(
+      TivePayloadSchema.parse({ ...validPayload('Standard Temperature Shipment'), ...overrides }),
+    );
+  }
+
+  it.each([
+    ['humidity above 100%', { Humidity: { Percentage: 1000 } }, 'humidity', 'humidity_out_of_range'],
+    ['negative humidity', { Humidity: { Percentage: -5 } }, 'humidity', 'humidity_out_of_range'],
+    ['temperature far above any survivable range', { Temperature: { Celsius: 99999 } }, 'temperature', 'temperature_out_of_range'],
+    ['temperature below absolute zero', { Temperature: { Celsius: -300 } }, 'temperature', 'temperature_out_of_range'],
+    ['negative light level', { Light: { Lux: -1 } }, 'light_level', 'light_level_out_of_range'],
+  ])('nulls %s and flags it', (_label, overrides, field, flag) => {
+    const { sensor, flags } = transformWith(overrides);
+    expect(sensor[field as 'humidity' | 'temperature' | 'light_level']).toBeNull();
+    expect(flags).toContain(flag);
+  });
+
+  it('keeps a genuine cryogenic reading -- the bound is physics, not a normal shipment', () => {
+    // Liquid-nitrogen dry shippers for cell therapies run near -196 C.
+    const { sensor, flags } = transformWith({ Temperature: { Celsius: -196 } });
+    expect(sensor.temperature).toBe(-196);
+    expect(flags).not.toContain('temperature_out_of_range');
+  });
+
+  it('does not confuse an impossible temperature with a missing one', () => {
+    const { flags } = transformWith({ Temperature: { Celsius: 99999 } });
+    expect(flags).not.toContain('null_primary_temperature');
+  });
+
+  it('nulls only the implausible accelerometer axis', () => {
+    const { sensor, flags } = transformWith({ Accelerometer: { G: 1, X: 5000, Y: 0.1, Z: 0.9 } });
+    expect(sensor.accelerometer).toEqual({ x: null, y: 0.1, z: 0.9, magnitude: 1 });
+    expect(flags).toContain('accelerometer_out_of_range');
+  });
+
+  it('rounds a fractional battery percentage instead of rejecting the reading', () => {
+    const { location, flags } = transformWith({ Battery: { Percentage: 65.5 } });
+    expect(location.battery_level).toBe(66);
+    expect(flags).toContain('battery_rounded');
+  });
+
+  it('nulls a battery percentage outside 0-100', () => {
+    const { location, flags } = transformWith({ Battery: { Percentage: 150 } });
+    expect(location.battery_level).toBeNull();
+    expect(flags).toContain('battery_out_of_range');
+  });
+
+  it('nulls a positive dBm, which no received signal can have', () => {
+    const { location, flags } = transformWith({ Cellular: { Dbm: 10 } });
+    expect(location.cellular_dbm).toBeNull();
+    expect(flags).toContain('cellular_dbm_out_of_range');
+  });
+
+  it('nulls a negative accuracy radius, and the derived category with it', () => {
+    const base = validPayload('Standard Temperature Shipment').Location as object;
+    const { location, flags } = transformWith({ Location: { ...base, Accuracy: { Meters: -23 } } });
+    expect(location.location_accuracy).toBeNull();
+    expect(location.location_accuracy_category).toBeNull();
+    expect(flags).toContain('location_accuracy_out_of_range');
+  });
+
+  it('nulls a fractional access-point count rather than inventing a whole number', () => {
+    const base = validPayload('Standard Temperature Shipment').Location as object;
+    const { location, flags } = transformWith({ Location: { ...base, WifiAccessPointUsedCount: 2.5 } });
+    expect(location.wifi_access_points).toBeNull();
+    expect(flags).toContain('wifi_access_points_invalid');
+  });
+
+  it('flags exactly (0, 0) as a probable missing fix but keeps the coordinates', () => {
+    const { location, flags } = transformWith({ Location: { Latitude: 0, Longitude: 0 } });
+    expect([location.latitude, location.longitude]).toEqual([0, 0]);
+    expect(flags).toContain('null_island_coordinates');
+  });
+
+  it('does not flag a coordinate that merely sits on the equator', () => {
+    const { flags } = transformWith({ Location: { Latitude: 0, Longitude: 32.58 } });
+    expect(flags).not.toContain('null_island_coordinates');
+  });
+
+  it('leaves in-range values and the clean samples untouched', () => {
+    const { flags } = transformWith({});
+    expect(flags).toEqual([]);
+  });
+});

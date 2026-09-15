@@ -86,8 +86,23 @@ export interface PxLocationPayload extends PxIdentity {
  * than buried in logs.
  */
 export type DataQualityFlag =
+  // Mapping and provenance
   | 'device_name_entity_mismatch'
   | 'unknown_location_method'
   | 'address_unparsed'
   | 'probe_temperature_dropped'
-  | 'null_primary_temperature';
+  | 'null_primary_temperature'
+  | 'nul_bytes_replaced'
+  // Location plausibility
+  | 'null_island_coordinates'
+  | 'location_accuracy_out_of_range'
+  | 'wifi_access_points_invalid'
+  // Sensor plausibility: the reported value was physically impossible and is
+  // stored as null, never clamped -- a clamped value would be invented data.
+  | 'temperature_out_of_range'
+  | 'humidity_out_of_range'
+  | 'light_level_out_of_range'
+  | 'accelerometer_out_of_range'
+  | 'cellular_dbm_out_of_range'
+  | 'battery_out_of_range'
+  | 'battery_rounded';

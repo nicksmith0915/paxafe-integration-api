@@ -53,3 +53,22 @@ describe('input fixtures match the published Tive schema', () => {
     }
   });
 });
+
+describe('conformance survives implausible input', () => {
+  it('still emits schema-valid records when sensor values are nulled for being impossible', () => {
+    const parsed = TivePayloadSchema.parse({
+      ...validSamples[0].payload,
+      Temperature: { Celsius: 99999 },
+      Humidity: { Percentage: 1000 },
+      Battery: { Percentage: 65.5 },
+      Cellular: { Dbm: 10 },
+      Accelerometer: { G: 1, X: 5000, Y: 0, Z: 1 },
+    });
+    const { sensor, location } = transformTivePayload(parsed);
+
+    expect(validateSensor(JSON.parse(JSON.stringify(sensor)))).toBe(true);
+    expect(validateSensor.errors ?? []).toEqual([]);
+    expect(validateLocation(JSON.parse(JSON.stringify(location)))).toBe(true);
+    expect(validateLocation.errors ?? []).toEqual([]);
+  });
+});

@@ -11,6 +11,14 @@
  *  2. Optional numeric containers are `.nullish()` throughout -- the sample
  *     payloads show Tive sending both `null` and outright absence for the same
  *     field (e.g. `ProbeTemperature`, `Accuracy`).
+ *  3. Secondary measurements (battery, access-point and tower counts) are
+ *     accepted as any number. A fractional or impossible value is corrected or
+ *     nulled and flagged in the transform; rejecting the payload would discard
+ *     the temperature and position reported alongside it.
+ *
+ * Only the fields that identify and locate a reading are strict: the IMEI
+ * pattern, the timestamp and the coordinate ranges. A violation there means the
+ * reading cannot be attributed or placed, which no downstream correction fixes.
  */
 
 import { z } from 'zod';
@@ -39,8 +47,8 @@ const TiveLocation = z.object({
   LocationMethod: z.string().nullish(),
   Accuracy: TiveAccuracy.nullish(),
   GeolocationSourceName: z.string().nullish(),
-  CellTowerUsedCount: z.number().int().nullish(),
-  WifiAccessPointUsedCount: z.number().int().nullish(),
+  CellTowerUsedCount: z.number().nullish(),
+  WifiAccessPointUsedCount: z.number().nullish(),
 });
 
 const TiveEndpoint = z.object({
@@ -95,7 +103,7 @@ export const TivePayloadSchema = z.object({
   Light: z.object({ Lux: z.number().nullish() }).nullish(),
   Battery: z
     .object({
-      Percentage: z.number().int().min(0).max(100).nullish(),
+      Percentage: z.number().nullish(),
       Estimation: z.string().nullish(),
       IsCharging: z.boolean().nullish(),
     })

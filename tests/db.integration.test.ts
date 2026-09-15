@@ -22,8 +22,10 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
+import { classifyDbError } from '@/lib/db/errors';
 import { createDrizzleRepository, type TelemetryRepository } from '@/lib/db/repository';
 import * as schema from '@/lib/db/schema';
+import { replaceNulBytes } from '@/lib/ingest/sanitize';
 import { TivePayloadSchema } from '@/lib/providers/tive/schema';
 import { transformTivePayload } from '@/lib/providers/tive/transform';
 import { validPayload } from './fixtures';
@@ -79,7 +81,7 @@ describe.skipIf(!TEST_DATABASE_URL)('persistence against a live database', () =>
     'stores a sensor and location record for one payload',
     async () => {
       const result = await store('Standard Temperature Shipment');
-      expect(result.duplicate).toBe(false);
+      expect(result.outcome).toBe('created');
       expect(result.sensorId).toBeTruthy();
       expect(result.locationId).toBeTruthy();
     },
@@ -110,7 +112,7 @@ describe.skipIf(!TEST_DATABASE_URL)('persistence against a live database', () =>
       await store('GPS Location Shipment');
       const second = await store('GPS Location Shipment');
 
-      expect(second.duplicate).toBe(true);
+      expect(second.outcome).toBe('duplicate');
       const [{ count }] = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(schema.sensorReadings);
@@ -159,6 +161,101 @@ describe.skipIf(!TEST_DATABASE_URL)('persistence against a live database', () =>
       expect(raw.provider).toBe('Tive');
       expect(raw.deviceImei).toBe('863257063350583');
       expect(raw.body).toMatchObject({ DeviceName: 'A571992' });
+    },
+    TIMEOUT,
+  );
+
+  // --- Edge cases, against the real constraint and type system ---------------
+
+  function transformedWith(overrides: Record<string, unknown>) {
+    return transformTivePayload(
+      TivePayloadSchema.parse({ ...validPayload('Standard Temperature Shipment'), ...overrides }),
+    );
+  }
+
+  async function persist(result: ReturnType<typeof transformTivePayload>) {
+    const rawPayloadId = await repo.insertRawPayload({
+      requestId: `test-${Math.random()}`,
+      provider: 'Tive',
+      body: {},
+    });
+    return repo.persistReadings({
+      rawPayloadId,
+      sensor: result.sensor,
+      location: result.location,
+      flags: result.flags,
+      shipmentId: null,
+      accountId: null,
+      shipmentContext: null,
+    });
+  }
+
+  it(
+    'reports a conflict, and writes nothing, when a different reading reuses a key',
+    async () => {
+      await persist(transformedWith({}));
+      const second = await persist(transformedWith({ Temperature: { Celsius: 30 }, DeviceName: 'RENAMED' }));
+      expect(second.outcome).toBe('conflict');
+
+      const rows = await db.select().from(schema.sensorReadings);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].temperature).toBe(10.08);
+
+      // Rolled back as a unit: the device upsert in the same transaction did not apply.
+      const [device] = await db.select().from(schema.devices);
+      expect(device.deviceId).toBe('A571992');
+    },
+    TIMEOUT,
+  );
+
+  it(
+    'classifies a real numeric overflow as a permanent data error',
+    async () => {
+      // Bypass the transform's bounds to provoke the overflow they exist to prevent.
+      const valid = transformedWith({});
+      const overflowing = { ...valid, sensor: { ...valid.sensor, humidity: 1000 } };
+      const error = await persist(overflowing).catch((e: unknown) => e);
+      expect(classifyDbError(error)).toMatchObject({ sqlstate: '22003', retryable: false });
+    },
+    TIMEOUT,
+  );
+
+  it(
+    'stores an implausible value as null once the transform has bounded it',
+    async () => {
+      const outcome = await persist(transformedWith({ Humidity: { Percentage: 1000 } }));
+      expect(outcome.outcome).toBe('created');
+      const [row] = await db.select().from(schema.sensorReadings);
+      expect(row.humidity).toBeNull();
+      expect(row.dataQualityFlags).toContain('humidity_out_of_range');
+    },
+    TIMEOUT,
+  );
+
+  it(
+    'records a JSON null body instead of violating the NOT NULL constraint',
+    async () => {
+      await repo.insertRawPayload({ requestId: 'null-body', provider: 'Tive', body: null });
+      const rows = await db.execute(sql`select jsonb_typeof(body) as kind from raw_payloads`);
+      expect(rows[0].kind).toBe('null');
+    },
+    TIMEOUT,
+  );
+
+  it(
+    'refuses a NUL byte as a permanent error, and accepts the sanitised body',
+    async () => {
+      const dirty = { DeviceName: `A571${String.fromCharCode(0)}992` };
+
+      const refused = await repo
+        .insertRawPayload({ requestId: 'nul-raw', provider: 'Tive', body: dirty })
+        .catch((e: unknown) => e);
+      expect(classifyDbError(refused)).toMatchObject({ sqlstate: '22P05', retryable: false });
+
+      const { value } = replaceNulBytes(dirty);
+      await expect(
+        repo.insertRawPayload({ requestId: 'nul-clean', provider: 'Tive', body: value }),
+      ).resolves.toBeTruthy();
     },
     TIMEOUT,
   );
