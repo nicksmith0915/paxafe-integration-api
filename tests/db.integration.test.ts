@@ -10,6 +10,8 @@
  *   TEST_DATABASE_URL=postgres://... npm test
  *
  * Run against a throwaway database -- each test truncates the tables it uses.
+ * `database-guard.ts` refuses to proceed if TEST_DATABASE_URL is the database
+ * the application itself is configured with.
  *
  * Timeouts are generous because this may run against a managed database several
  * hundred milliseconds away, where a handful of round-trips comfortably exceeds
@@ -28,13 +30,15 @@ import * as schema from '@/lib/db/schema';
 import { replaceNulBytes } from '@/lib/ingest/sanitize';
 import { TivePayloadSchema } from '@/lib/providers/tive/schema';
 import { transformTivePayload } from '@/lib/providers/tive/transform';
+import { applicationDatabaseUrls, isLocalDatabase, refusalReason } from './database-guard';
 import { validPayload } from './fixtures';
 
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 const TIMEOUT = 30_000;
 
 describe.skipIf(!TEST_DATABASE_URL)('persistence against a live database', () => {
-  const isLocal = /@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(TEST_DATABASE_URL ?? '');
+  const refusal = refusalReason(TEST_DATABASE_URL!, applicationDatabaseUrls());
+  const isLocal = isLocalDatabase(TEST_DATABASE_URL!);
   const client = postgres(TEST_DATABASE_URL!, {
     max: 1,
     prepare: false,
@@ -68,6 +72,8 @@ describe.skipIf(!TEST_DATABASE_URL)('persistence against a live database', () =>
   }
 
   beforeEach(async () => {
+    // Checked here, immediately before the destructive statement, not only once up front.
+    if (refusal) throw new Error(refusal);
     await db.execute(
       sql`truncate table sensor_readings, location_readings, raw_payloads, devices, shipments cascade`,
     );
